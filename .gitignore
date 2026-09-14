@@ -1,0 +1,16 @@
+data/
+*.db
+.venv/
+__pycache__/
+*.pyc
+deploy/api_key.txt
+deploy/models/
+bundle/
+output/
+anamnes_files/
+.DS_Store
+tests/private/*
+!tests/private/.gitkeep
+.claude/
+logs/
+.attic/

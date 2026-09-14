@@ -1,0 +1,9 @@
+# Eski CLI/Gradio aracı için (src/anonymize_cli.py, src/app.py). Servis: requirements-service.txt
+PyMuPDF>=1.26
+Pillow>=11
+pytesseract>=0.3.13
+gradio>=5,<6
+pyyaml>=6
+pydantic>=2.7
+pytest>=8
+# Opsiyonel NER: spacy>=3.7 && python -m spacy download xx_ent_wiki_sm

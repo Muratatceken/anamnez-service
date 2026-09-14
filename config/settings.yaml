@@ -1,0 +1,52 @@
+# KVKK Uyumlu Anonimizasyon Sistemi - Konfigürasyon
+# Anamnez ve patoloji formlarını API LLM'lere hazırlar
+
+# PDF Ayarları
+pdf:
+  dpi: 300                   # PDF sayfalarını görüntüye çevirme çözünürlüğü
+  max_pages: 10              # Maksimum işlenecek sayfa sayısı
+  extract_text_first: true   # Metin katmanı varsa önce onu dene
+  ocr_lang: "tur+eng"        # Tesseract OCR dil ayarı
+
+# Görüntü Ayarları
+image:
+  max_dimension: 2048        # Görüntülerin maksimum kenar uzunluğu (piksel)
+  quality: 95                # JPEG sıkıştırma kalitesi
+
+# Anonimizasyon Ayarları
+anonymization:
+  generalize_age: true       # Yaşı 10'luk aralığa çevir (80 → 75-84)
+  remove_dates: true         # Tarihleri sil
+  remove_institutions: true  # Kurum/hastane adlarını sil
+
+# Veritabanı Ayarları
+database:
+  path: "data/anonymization_log.db"
+  log_full_text: false       # KVKK: tam metin loglama kapalı
+
+# Web Arayüzü Ayarları
+ui:
+  host: "127.0.0.1"          # Sadece lokal erişim
+  port: 7860
+  share: false               # Gradio public link KAPALI
+  max_file_size_mb: 50
+
+# Loglama
+logging:
+  level: "INFO"
+  file: "logs/anonymizer.log"
+
+# ── Opsiyonel: Sınıflandırma (Ollama veya API) ──
+# Bu ayarlar sadece sınıflandırma yapılacaksa gerekir
+llm:
+  model: "qwen2.5vl:7b"
+  base_url: "http://localhost:11434"
+  temperature: 0.1
+  max_tokens: 2048
+  timeout: 180
+  text_fallback_model: null
+
+classification:
+  confidence_threshold: 0.6
+  use_keyword_validation: true
+  require_human_review_below: 0.4

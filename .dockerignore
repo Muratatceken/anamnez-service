@@ -1,0 +1,15 @@
+# Build context'e ASLA girmemesi gerekenler (ham hasta verisi, DB, sanal ortam)
+anamnes_files/
+output/
+data/
+*.db
+.venv/
+venv/
+__pycache__/
+*.pyc
+tests/
+docs/
+.claude/
+.DS_Store
+Dockerfile
+docker-compose.yml

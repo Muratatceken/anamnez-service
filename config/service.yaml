@@ -1,0 +1,68 @@
+# Kapalı devre anonimizasyon + sınıflandırma servisi
+#
+# Ortam değişkenleri ile ezilebilir: ANAMNEZ_<BÖLÜM>__<ANAHTAR>
+#   örn. ANAMNEZ_LLM__BASE_URL=http://vllm-judge:8000/v1
+#
+# Geliştirme (Mac, Ollama)  → backend: ollama
+# Üretim (GPU, vLLM)        → backend: openai  (OpenAI uyumlu /v1 uç noktası)
+
+server:
+  host: "127.0.0.1"          # kapalı devre: sadece iç ağ; docker'da 0.0.0.0 + iç network
+  port: 8080
+  api_key: "change-me"       # X-API-Key başlığı; boş bırakılırsa kimlik doğrulama KAPALI (sadece dev)
+  max_file_size_mb: 50
+  workers: 1                 # eşzamanlı pipeline sayısı (GPU başına 1 önerilir; >1 uyarı verir)
+  max_queue: 20              # bekleyen iş sınırı (dosya baytları RAM'de) → dolunca HTTP 503
+  shutdown_grace_seconds: 30 # kapanışta işlenmekte olan işin bitmesi için bekleme
+
+storage:
+  db_path: "data/service.db"
+  store_anonymized_text: true   # done sonucunda anonim metin saklanır/döner (kapıdan geçmiş)
+  review_text_mode: "masked"    # needs_review: masked (kapı bulguları da maskeli, bulgu metni yok) | full | none
+  # Not: ham dosya hiçbir modda diske yazılmaz (RAM'de işlenir; multipart spool yok, tesseract stdin/stdout)
+
+ocr:
+  backend: "vision_llm"      # tesseract | vision_llm
+  fallback_to_tesseract: true
+  cross_check: true          # tesseract paralel çalışır; bulduğu PII nihai metinde aranır
+  min_completeness: 0.6      # birincil/tesseract uzunluk oranı bunun altındaysa uyarı
+  dpi: 300
+  max_pages: 10
+  lang: "tur+eng"
+  min_chars: 20
+  vision:
+    backend: "ollama"        # ollama | openai
+    base_url: "http://127.0.0.1:11434"
+    model: "glm-ocr"
+    timeout: 300
+    max_dimension: 2000
+    num_ctx: 8192            # görüntü tokenleri için (Ollama)
+
+llm:
+  backend: "ollama"          # ollama | openai
+  base_url: "http://127.0.0.1:11434"
+  model: "qwen3:8b"
+  temperature: 0.0
+  max_tokens: 2048
+  timeout: 600               # M1'de model takası + uzun metin; GPU sunucuda 120 yeter
+  num_ctx: 8192
+  think: false               # qwen3 için düşünme modunu kapat (hız)
+
+anonymization:
+  generalize_age: true
+  remove_dates: true
+  remove_institutions: true
+  gate:
+    enabled: true
+    heuristics: true         # deterministik kalıntı avcısı (LLM gerekmez)
+    llm_judge: true          # LLM ile "kalan PII var mı" kontrolü
+    gliner: false            # neondijital/neonredact-tr-model (gliner paketi gerekir)
+    gliner_model: "neondijital/neonredact-tr-model"
+    gliner_threshold: 0.5
+    fail_closed: true        # kapı geçilemezse sonuç DÖNMEZ → needs_review
+
+classification:
+  enabled: true
+  confidence_threshold: 0.6
+  use_keyword_validation: true
+  require_human_review_below: 0.4

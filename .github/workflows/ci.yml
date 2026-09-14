@@ -1,0 +1,14 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-tur tesseract-ocr-eng
+      - run: pip install -r requirements-service.txt pytest
+      - run: python -m pytest tests/ -q
+      - name: Docker build (API imajı)
+        run: docker build -f deploy/Dockerfile -t anamnez-service:ci .

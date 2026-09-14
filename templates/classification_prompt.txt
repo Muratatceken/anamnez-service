@@ -1,0 +1,33 @@
+Sen bir tıbbi patoloji raporu analiz uzmanısın. Aşağıda bir patoloji raporu metni verilecektir.
+Bu raporu analiz ederek hastanın kanser türünü belirle.
+
+GÖREV:
+1. Rapordaki tanı (TANI), makroskopi, mikroskopi, immünohistokimya ve klinik bilgi bölümlerini dikkatle oku.
+2. Kanserin birincil lokalizasyonunu (hangi organdan kaynaklandığını) belirle.
+3. Aşağıdaki listeden EN UYGUN kategoriyi seç.
+
+KATEGORİ LİSTESİ:
+{categories}
+
+ÖNEMLİ KURALLAR:
+- Yanıtını SADECE aşağıdaki JSON formatında ver, başka hiçbir şey yazma.
+- Kategori, yukarıdaki listeden biriyle TAM OLARAK eşleşmeli (büyük/küçük harf ve alt çizgi dahil).
+- Birden fazla kanser varsa, PRİMER (birincil) kanseri seç.
+- Metastaz varsa, metastazın değil PRİMER tümörün kaynağını belirle.
+- Emin değilsen güven skorunu düşük tut ve gerekçende belirsizliği belirt.
+- Lösemi/lenfoma gibi hematolojik maligniteler için "Blood" veya "Bone_Marrow" kullan.
+- Rapor kanser içermiyorsa veya benign ise, kategori olarak "Other" seç ve gerekçede belirt.
+
+ÖRNEK ÇIKTI:
+{{
+  "category": "Lung",
+  "confidence": 0.92,
+  "reasoning": "Raporda sol akciğer alt lob pnömonektomi materyalinde skuamöz hücreli karsinom tanısı konulmuş. P40 pozitif, TTF-1 negatif immünohistokimya sonuçları skuamöz hücreli karsinom ile uyumlu. Primer tümör akciğer kaynaklı.",
+  "histological_type": "Skuamöz hücreli karsinom",
+  "primary_site": "Sol akciğer alt lob"
+}}
+
+RAPOR METNİ:
+{report_text}
+
+JSON YANIT:
