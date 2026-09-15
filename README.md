@@ -37,7 +37,7 @@ POST /jobs ─► OCR (Tesseract; GPU varsa Vision-LLM) ─► GLiNER-tr NER + r
 ```bash
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements-service.txt torch pytest
 brew install tesseract tesseract-lang          # Linux: apt install tesseract-ocr tesseract-ocr-tur
-make test                                       # ~80 test, ağ/GPU gerekmez
+make test                                       # 108 test, ağ/GPU gerekmez (GLiNER modeli ilk seferde iner)
 export ANTHROPIC_API_KEY=sk-ant-...             # bulut raporu için
 ANAMNEZ_CLOUD__ENABLED=true ANAMNEZ_LLM__ENABLED=false make run     # http://127.0.0.1:8080 (key: devkey)
 python client/anamnez_client.py --url http://127.0.0.1:8080 --key devkey rapor.pdf
@@ -77,7 +77,7 @@ config/             service.yaml (servis), turkish_names.json, categories.json
 deploy/             docker-compose.cpu.yml (hibrit) + docker-compose.yml (GPU), Dockerfile, nftables.{cpu,}.conf, squid/, systemd/
 scripts/            prepare_models.sh (offline bundle), verify_no_egress.sh
 client/             Python istemci + CLI
-tests/              69 test: anonimizasyon regresyonu, kapı, API, sınıflandırma (Ollama gerekmez)
+tests/              108 test: anonimizasyon regresyonu, NER, kapı, egress, Claude raporu (sahte istemci), API, sentetik el yazısı garantisi
 docs/               KURULUM_REHBERI.md, SERVIS.md
 ```
 
