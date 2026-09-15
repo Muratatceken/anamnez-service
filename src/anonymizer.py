@@ -88,12 +88,16 @@ TURKISH_PROVINCES = [
     "Siirt", "Sinop", "Sivas", "Şanlıurfa", "Şırnak", "Tekirdağ", "Tokat", "Trabzon", "Tunceli", "Uşak", "Van",
     "Yalova", "Yozgat", "Zonguldak",
 ]
+def _tr_upper(x: str) -> str:
+    return x.replace("i", "İ").replace("ı", "I").upper()
+
+
 def _prov_forms(x: str) -> set[str]:
     """Konya, KONYA, Konya (ASCII), KONYA (ASCII). Küçük harf biçimi ("istanbul" — OCR) yalnızca
     6+ harfli, gündelik anlamı olmayan illerde; 'van', 'ordu', 'muş', 'kars' gibi kısa/çok anlamlılar EŞLEŞMEZ."""
     forms = {x, _normalize_turkish(x)}
-    up = x.upper()
-    forms |= {up, _normalize_turkish(up)}
+    up = _tr_upper(x)
+    forms |= {up, _normalize_turkish(up), x.upper()}   # x.upper(): OCR'ın 'KAYSERI' (noktasız) biçimi
     low = x.lower().replace("i̇", "i")
     if len(x) >= 6 and x not in {"Batman", "Burdur", "Bartın", "Düzce", "Bolu"}:
         forms |= {low, _normalize_turkish(low)}
@@ -117,6 +121,72 @@ MEDICAL_SECTION_HEADERS = [
     "LOKALIZASYON",
     "HISTOLOJI",
 ]
+
+
+_PROV_UPPER = sorted({_tr_upper(x) for x in TURKISH_PROVINCES if len(x) >= 6} | {_normalize_turkish(_tr_upper(x)) for x in TURKISH_PROVINCES if len(x) >= 6})
+_CAPS_TOKEN_RX = re.compile(r"(?<![A-ZÇĞİÖŞÜa-zçğıöşü])([A-ZÇĞİÖŞÜ]{6,14})(?:['’]?(?:DAN|DEN|TAN|TEN|DA|DE|TA|TE|NIN|NİN|YA|YE|LI|Lİ))?(?![A-ZÇĞİÖŞÜa-zçğıöşü])")
+
+
+def _edit1(a: str, b: str) -> bool:
+    """Levenshtein(a,b) ≤ 1 (kısa dizeler için hızlı yol)."""
+    if a == b:
+        return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    if la == lb:
+        return sum(x != y for x, y in zip(a, b)) == 1
+    if la > lb:
+        a, b = b, a
+    i = 0
+    while i < len(a) and a[i] == b[i]:
+        i += 1
+    return a[i:] == b[i + 1:]
+
+
+_MEDICAL_UPPER_STOP = {w.lower() for w in """KARSİNOM KARSİNOMU ADENOKARSİNOM SARKOM LENFOMA MELANOM GLİOBLASTOM SEMİNOM
+    METASTAZ METASTATİK MATERYAL MATERYALİ BİYOPSİ BİYOPSİSİ REZEKSİYON EKSİZYON HİSTOLOJİ MİKROSKOPİ MAKROSKOPİ
+    PATOLOJİ ONKOLOJİ HEMATOLOJİ RADYOLOJİ ANAMNEZ TETKİK TETKİKLER TANILAR PROTOKOL""".split()}
+
+
+def _lev_le2(a: str, b: str) -> bool:
+    """Levenshtein(a,b) ≤ 2 (kısa dizeler; erken çıkışlı DP)."""
+    if abs(len(a) - len(b)) > 2:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > 2:
+            return False
+        prev = cur
+    return prev[-1] <= 2
+
+
+def _fuzzy_province_sub(text: str) -> tuple[str, int]:
+    n = 0
+    def repl(m):
+        nonlocal n
+        tok = m.group(1)
+        tok_n = _normalize_turkish(tok)
+        if tok in _PROV_UPPER or tok_n in _PROV_UPPER:
+            return m.group(0)  # zaten tam eşleşme (yukarıdaki kural işledi/ işlemeli)
+        for prov in _PROV_UPPER:
+            if prov[0] != tok[0]:
+                continue
+            if abs(len(prov) - len(tok)) <= 1 and (_edit1(tok, prov) or _edit1(tok_n, prov)):
+                n += 1
+                return "[SEHIR_SILINDI]"
+            # 8+ harf: il + bilinen ek ("TRABZONDA") ile mesafe ≤2 ("TRAEZONDM") — tıbbi kelimeler hariç
+            if len(tok) >= 8 and _tr_upper(tok).lower() not in _MEDICAL_UPPER_STOP:
+                for suf in ("", "DA", "DE", "DAN", "DEN", "TA", "TE", "YA", "YE"):
+                    cand = prov + suf
+                    if abs(len(cand) - len(tok)) <= 1 and _lev_le2(tok_n, _normalize_turkish(cand)):
+                        n += 1
+                        return "[SEHIR_SILINDI]"
+        return m.group(0)
+    return _CAPS_TOKEN_RX.sub(repl, text), n
 
 
 class ReportAnonymizer:
@@ -319,7 +389,7 @@ class ReportAnonymizer:
 
             # Doktor etiketleri
             _name = r'([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜa-zçğıöşü]+(?:[ \t]+(?![A-ZÇĞİÖŞÜa-zçğıöşü]+[ \t]*[:=»>])(?!(?:[İIi]steyen|G[öo]nd|Servis|Doktor|Dokt|TC|Ya[şs]|Cinsiyet|Do[gğ]um|Baba|Anne|Protokol|Rapor|Biyopsi|Dosya|Kabul|Numune|Tarih|Klinik|Tetkik|Patoloji|Hasta)\b)[A-ZÇĞİÖŞÜa-zçğıöşü]+){0,4})'
-            _title = r'(?:(?:E[ĞGÇC][İI]?T[İI]M[ \t]+G[ÖO]REVL[İI]S[İI]|PROF\.?[ \t]*DR\.?|UZM\.?[ \t]*DR\.?|DO[ÇC]\.?[ \t]*DR\.?|OP\.?[ \t]*DR\.?|DR\.?)[ \t]+)?'
+            _title = r'(?:(?:E[ĞGÇC][İI]?T[İI]M[ \t]+G[ÖO]REVL[İI]S[İI]|DR\.?[ \t]*[ÖO][ĞG]R\.?[ \t]*[ÜU]YES[İI]|PROF\.?[ \t]*DR\.?|UZM\.?[ \t]*DR\.?|DO[ÇC]\.?[ \t]*DR\.?|OP\.?[ \t]*DR\.?|DR\.?)[ \t]+)?'
             doc_patterns = [
                 r'(?:[İI]steyen[ \t]*Doktor[ \t]*[:.]?[ \t]*)' + _title + _name,
                 r'(?:G[öo]nd(?:eren)?\.?[ \t]*Dokt?(?:or)?\.?[ \t]*[:;.]?[ \t]*)' + _title + _name,
@@ -388,6 +458,7 @@ class ReportAnonymizer:
             r'(?:OP|Op)\.?[ \t]*(?:DR|Dr)\.?[ \t]*' + _NAME4,
             r'(?:YRD|Yrd)\.?[ \t]*(?:DO[CÇcç]|Do[cç])\.?[ \t]*(?:DR|Dr)\.?[ \t]*' + _NAME4,
             r'(?:E[ĞGÇC][İI]?T[İI]M)[ \t]+G[ÖO]REVL[İI]S[İI][ \t]+' + _NAME4,
+            r'(?:DR|Dr|dr)\.?[ \t]*(?:[ÖO][ĞG]R|Öğr|Ogr)\.?[ \t]*(?:[ÜU]YES[İI]|Üyesi|Uyesi)[ \t]+' + _NAME4,   # "Dr. Öğr. Üyesi Ad Soyad" (DR.'den ÖNCE)
             r'(?:DR|Dr|dr)\.[ \t]*' + _NAME4,   # "Dr. Ayşe Kaya" / "DR. AYŞE KAYA"
         ]
         for pattern in title_patterns:
@@ -549,6 +620,10 @@ class ReportAnonymizer:
         if n:
             text = PROVINCE_RX.sub('[SEHIR_SILINDI]', text)
             report.fields_removed.append(f"Şehir ({n} adet)")
+        # OCR bozuk il adı: BÜYÜK HARFLİ, 6-14 harf, bir il adına edit mesafesi ≤1 ("TRAPZON", "ANKRA")
+        text, n2 = _fuzzy_province_sub(text)
+        if n2:
+            report.fields_removed.append(f"Şehir (OCR-bulanık, {n2} adet)")
 
         # İl Sağlık Müdürlüğü
         text = re.sub(r'[A-Za-zçğıöşüÇĞİÖŞÜ]+\s+[İI]l\s+Sa[ğg]l[ıi]k\s+M[üu]d[üu]rl[üu][gğ][üu]', '[KURUM_SILINDI]', text)

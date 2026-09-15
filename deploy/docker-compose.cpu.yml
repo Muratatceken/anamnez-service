@@ -1,0 +1,87 @@
+# Hibrit dağıtım — GPU'SUZ sunucu (CPU) + Claude API
+#
+#   api          : OCR (tesseract) + GLiNER NER + regex + kapı + egress gateway  (edge ağı; DOĞRUDAN internet yok)
+#   egress-proxy : squid, yalnızca api.anthropic.com:443'e CONNECT (allowlist) — sunucunun tek çıkış noktası
+#
+# Ağ: api → egress-proxy → internet. nftables (deploy/nftables.cpu.conf) yalnızca proxy konteynerinin
+# (sabit IP 10.200.2.20) 443/53'e çıkmasına izin verir; api konteyneri dışarı paket atamaz.
+#
+#   openssl rand -hex 32 > deploy/api_key.txt ; echo "sk-ant-..." > deploy/anthropic_key.txt
+#   API_BIND=10.0.0.5 docker compose -f deploy/docker-compose.cpu.yml up -d
+
+name: anamnez-hybrid
+
+networks:
+  edge:
+    driver: bridge
+    ipam:
+      config: [{ subnet: 10.200.2.0/24 }]
+
+volumes:
+  service-data:
+
+services:
+  egress-proxy:
+    image: ubuntu/squid:6.6-24.04_beta
+    restart: unless-stopped
+    networks:
+      edge:
+        ipv4_address: 10.200.2.20
+    volumes:
+      - ./squid/squid.conf:/etc/squid/squid.conf:ro
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD-SHELL", "squid -k check || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: anamnez-service:1.2.0
+    restart: unless-stopped
+    networks:
+      edge:
+        ipv4_address: 10.200.2.10
+    depends_on:
+      egress-proxy: { condition: service_healthy }
+    ports:
+      - "${API_BIND:-127.0.0.1}:8080:8080"
+    stop_grace_period: 60s
+    environment:
+      ANAMNEZ_SERVER__HOST: "0.0.0.0"
+      ANAMNEZ_SERVER__API_KEY_FILE: "/run/secrets/api_key"
+      ANAMNEZ_STORAGE__DB_PATH: "/data/service.db"
+      ANAMNEZ_STORAGE__EGRESS_AUDIT_DB: "/data/egress_audit.db"
+      ANAMNEZ_OCR__BACKEND: "tesseract"
+      ANAMNEZ_LLM__ENABLED: "false"                 # lokal LLM yok (CPU)
+      ANAMNEZ_ANONYMIZATION__ENGINE: "ner+regex"
+      ANAMNEZ_ANONYMIZATION__NER__MODEL_PATH: "/models/neonredact-tr"
+      ANAMNEZ_CLOUD__ENABLED: "true"
+      ANAMNEZ_CLOUD__PROVIDER: "anthropic"
+      ANAMNEZ_CLOUD__MODEL: "claude-opus-5"
+      ANAMNEZ_CLOUD__API_KEY_FILE: "/run/secrets/anthropic_key"
+      ANAMNEZ_CLOUD__PROXY: "http://10.200.2.20:3128"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      OMP_NUM_THREADS: "4"
+    secrets: [api_key, anthropic_key]
+    volumes:
+      - service-data:/data
+      - ./models:/models:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    deploy:
+      resources:
+        limits: { memory: 6g }
+
+secrets:
+  api_key:
+    file: ./api_key.txt
+  anthropic_key:
+    file: ./anthropic_key.txt

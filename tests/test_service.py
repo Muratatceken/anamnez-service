@@ -56,7 +56,7 @@ def make_pipeline(llm, **overrides):
     cfg = {
         "ocr": {"backend": "tesseract", "min_chars": 20},
         "llm": {"backend": "ollama", "model": "x"},
-        "anonymization": {"gate": {"enabled": True, "llm_judge": True, "fail_closed": True}},
+        "anonymization": {"engine": "regex", "gate": {"enabled": True, "llm_judge": True, "fail_closed": True}},
         "classification": {"enabled": True, "confidence_threshold": 0.6, "require_human_review_below": 0.4},
         "storage": {"store_review_text": True},
     }
@@ -135,6 +135,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("ANAMNEZ_STORAGE__DB_PATH", str(tmp_path / "t.db"))
     monkeypatch.setenv("ANAMNEZ_SERVER__API_KEY", "secret")
     monkeypatch.setenv("ANAMNEZ_OCR__BACKEND", "tesseract")
+    monkeypatch.setenv("ANAMNEZ_ANONYMIZATION__ENGINE", "regex")   # testlerde GLiNER yüklenmesin (yavaş)
     monkeypatch.setenv("ANAMNEZ_ANONYMIZATION__GATE__ENABLED", "true")
     monkeypatch.setenv("ANAMNEZ_SERVER__MAX_QUEUE", "2")
     monkeypatch.setenv("ANAMNEZ_SERVER__MAX_FILE_SIZE_MB", "1")

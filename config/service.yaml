@@ -17,6 +17,7 @@ server:
 
 storage:
   db_path: "data/service.db"
+  egress_audit_db: "data/egress_audit.db"   # dışarı çıkan her metnin hash/boyut/hedef kaydı (metin YOK)
   store_anonymized_text: true   # done sonucunda anonim metin saklanır/döner (kapıdan geçmiş)
   review_text_mode: "masked"    # needs_review: masked (kapı bulguları da maskeli, bulgu metni yok) | full | none
   # Not: ham dosya hiçbir modda diske yazılmaz (RAM'de işlenir; multipart spool yok, tesseract stdin/stdout)
@@ -38,7 +39,9 @@ ocr:
     max_dimension: 2000
     num_ctx: 8192            # görüntü tokenleri için (Ollama)
 
+# ── Lokal LLM (opsiyonel; CPU sunucuda enabled: false) — yargıç ve/veya lokal sınıflandırma ──
 llm:
+  enabled: true              # false → llm_judge ve lokal sınıflandırma devre dışı (bulut raporu kullanılır)
   backend: "ollama"          # ollama | openai
   base_url: "http://127.0.0.1:11434"
   model: "qwen3:8b"
@@ -49,6 +52,12 @@ llm:
   think: false               # qwen3 için düşünme modunu kapat (hız)
 
 anonymization:
+  engine: "ner+regex"        # ner+regex (GLiNER-tr önce, regex taban) | regex
+  ner:
+    model: "neondijital/neonredact-tr-model"   # HF cache (dev) — offline: model_path
+    model_path: null                            # ör. /models/neonredact-tr (bundle)
+    threshold: 0.3
+    case_pass: true          # BÜYÜK HARFLİ metin için harf-duyarlı ikinci geçiş
   generalize_age: true
   remove_dates: true
   remove_institutions: true
@@ -66,3 +75,15 @@ classification:
   confidence_threshold: 0.6
   use_keyword_validation: true
   require_human_review_below: 0.4
+
+# ── Bulut raporu: yalnızca kapıdan geçmiş ANONİM metin gider (service/egress.py) ──
+cloud:
+  enabled: false             # true → Claude ile doktor raporu + sınıflandırma (ANTHROPIC_API_KEY veya api_key_file)
+  provider: "anthropic"      # tek izinli sağlayıcı; ağda da yalnızca api.anthropic.com:443 açık (deploy/)
+  model: "claude-opus-5"
+  effort: "high"             # low | medium | high | xhigh | max
+  max_tokens: 4000
+  timeout: 120
+  max_retries: 2
+  api_key_file: null         # ör. /run/secrets/anthropic_key
+  proxy: null                # ör. http://egress-proxy:3128 — Docker'da tek çıkış noktası

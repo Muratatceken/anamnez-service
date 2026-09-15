@@ -55,6 +55,8 @@ async def lifespan(app: FastAPI):
     logging.getLogger("httpx").setLevel(logging.WARNING)  # her LLM isteğini loglama
     srv = state.cfg["server"]
     state.pipeline = Pipeline(state.cfg)
+    if state.pipeline.ner is not None:   # modeli açılışta yükle (ilk iş yavaş olmasın)
+        logger.info("NER ısınma: %s", state.pipeline.ner.health())
     state.store = JobStore(state.cfg["storage"]["db_path"])
     state.runner = JobRunner(
         state.pipeline, state.store,

@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from service.anonymization.gate import AnonymizationGate, cross_ocr_candidates, tr_fold  # noqa: E402
+from service.anonymization.ner import NERAnonymizer  # noqa: E402
 from service.backends.llm import make_llm  # noqa: E402
 from service.backends.ocr import TesseractOCR, VisionLLMOCR  # noqa: E402
 from src.anonymizer import ReportAnonymizer  # noqa: E402
@@ -114,11 +115,25 @@ def make_llm_from_spec(spec: str, timeout: float):
 
 # ── ana döngü ──────────────────────────────────────────────────────────────
 def run(data_dir: Path, ocr_specs: list[str], llm_spec: str | None, timeout: float, limit: int | None,
-        out_dir: Path, classify: bool) -> dict:
+        out_dir: Path, classify: bool, engine: str = "ner+regex") -> dict:
     meta = json.loads((data_dir / "meta.json").read_text(encoding="utf-8"))
     if limit:
         meta = meta[:limit]
-    anon = ReportAnonymizer()
+    rx = ReportAnonymizer()
+    ner = NERAnonymizer() if engine.startswith("ner") else None
+
+    class _Anon:
+        """Servisteki Pipeline.anonymize_text ile aynı sıra: NER → regex; adayları döndürür."""
+        def anonymize(self, text):
+            cands = set()
+            if ner is not None:
+                n = ner.anonymize(text)
+                text, cands = n.text, n.candidates
+            out, rep_ = rx.anonymize(text)
+            rep_.ner_candidates = cands
+            return out, rep_
+
+    anon = _Anon()
     llm = make_llm_from_spec(llm_spec, timeout) if llm_spec else None
     gate = AnonymizationGate({"enabled": True, "heuristics": True, "llm_judge": bool(llm), "fail_closed": True}, llm)
     classifier = None
@@ -139,8 +154,8 @@ def run(data_dir: Path, ocr_specs: list[str], llm_spec: str | None, timeout: flo
             alt_text = tess.ocr_image(png)
         except Exception:  # noqa: BLE001
             alt_text = ""
-        alt_anon, _ = anon.anonymize(alt_text)
-        cross = cross_ocr_candidates(alt_text, alt_anon)
+        alt_anon, alt_rep = anon.anonymize(alt_text)
+        cross = cross_ocr_candidates(alt_text, alt_anon) | getattr(alt_rep, "ner_candidates", set())
 
         for name, fn in backends:
             t0 = time.time()
@@ -151,7 +166,8 @@ def run(data_dir: Path, ocr_specs: list[str], llm_spec: str | None, timeout: flo
                 hyp, err = "", type(e).__name__
             dt = round(time.time() - t0, 1)
             anon_text, rep = anon.anonymize(hyp)
-            g = gate.check(anon_text, cross_candidates=cross if name != "tesseract" else set())
+            cands = (cross if name != "tesseract" else set()) | getattr(rep, "ner_candidates", set())
+            g = gate.check(anon_text, cross_candidates=cands)
             leaks = [p for p in item["pii"] if fuzzy_contains(anon_text, p)]
             over = [k for k in item["keep"] if fuzzy_contains(hyp, k) and not fuzzy_contains(anon_text, k)]
             row = {
@@ -242,5 +258,6 @@ if __name__ == "__main__":
     ap.add_argument("--timeout", type=float, default=600)
     ap.add_argument("--limit", type=int)
     ap.add_argument("--out", default="bench/results")
+    ap.add_argument("--engine", default="ner+regex", choices=["ner+regex", "regex"])
     a = ap.parse_args()
-    run(Path(a.data), a.ocr, a.llm, a.timeout, a.limit, Path(a.out), classify=not a.no_classify)
+    run(Path(a.data), a.ocr, a.llm, a.timeout, a.limit, Path(a.out), classify=not a.no_classify, engine=a.engine)

@@ -8,7 +8,14 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-tur tesseract-ocr-eng
+      - name: GLiNER modelini cache'le (HF hub)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-neonredact-tr-v1
+      - run: pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<3"
       - run: pip install -r requirements-service.txt pytest
       - run: python -m pytest tests/ -q
-      - name: Docker build (API imajı)
+        env: { TOKENIZERS_PARALLELISM: "false" }
+      - name: Docker build (API imajı, CPU)
         run: docker build -f deploy/Dockerfile -t anamnez-service:ci .

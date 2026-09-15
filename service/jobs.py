@@ -175,7 +175,7 @@ class JobRunner:
         except Exception as e:  # noqa: BLE001
             logger.error("mark_processing hatası (%s): %s", job_id, type(e).__name__)
         try:
-            res = self.pipeline.run(data, filename)
+            res = self.pipeline.run(data, filename, job_id=job_id)
             status, result, sha, err = res.status, res.as_dict(), res.file_sha256, res.error
         except Exception as e:  # noqa: BLE001
             logger.error("İş %s pipeline hatası: %s", job_id, type(e).__name__)
