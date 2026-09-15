@@ -37,7 +37,7 @@ python client/anamnez_client.py --url http://127.0.0.1:8080 --key devkey rapor.p
 
 **Ana pipeline:** PDF/Görüntü → Metin Çıkarma (lokal OCR) → Anonimizasyon (regex/NER) → Temiz metin çıktısı
 
-**Servis (`service/`, kapalı devre, tek kiracı):** Dosya → çift OCR (Vision-LLM + Tesseract) → regex anonimizasyon → doğrulama kapısı (deterministik + çapraz OCR + LLM yargıç; fail-closed) → lokal LLM sınıflandırma → JSON rapor. Backend'ler pluggable: `ollama` (dev) / `openai` (vLLM, prod). Dağıtım: `deploy/` (docker-compose internal network, nftables egress deny, offline model bundle). Detay: `docs/SERVIS.md`.
+**Servis (`service/`, hibrit, tek kiracı):** Dosya → OCR (Tesseract; GPU'da Vision-LLM) → GLiNER-tr NER + regex anonimizasyon → fail-closed kapı → **egress gateway** (`service/egress.py`) → Claude (`service/report.py`, `claude-opus-5`, yapılandırılmış DoctorReport) → doktor raporu + 33 kategori. Kişisel veri yalnızca sunucuda; buluta yalnızca kapıdan geçmiş anonim metin. `cloud.enabled: false` → kapalı devre GPU modu (lokal Qwen3). Dağıtım: `deploy/docker-compose.cpu.yml` (api + squid allowlist) + `deploy/nftables.cpu.conf` (tek pinhole). Detay: `docs/SERVIS.md`. Bench: `bench/` (sentetik el yazısı; hedef "kapı PASS + sızıntı = 0").
 
 Key modules in `src/`:
 
@@ -53,7 +53,7 @@ Key modules in `src/`:
 
 Servis modülleri (`service/`): `api.py` (FastAPI, raw-body upload, API key), `jobs.py` (sınırlı kuyruk + SQLite), `pipeline.py`, `backends/llm.py` (Ollama/OpenAI-uyumlu), `backends/ocr.py` (Vision-LLM + Tesseract stdin/stdout), `anonymization/gate.py` (deterministik + çapraz-OCR + LLM yargıç), `classification.py`.
 
-**Kapalı devre kuralı:** Bulut API'ye veri gönderen hiçbir modül yoktur ve eklenmemelidir. Ham metin/dosya adı loglanmaz; `exc_info=True` ve `str(e)` loglama yasak (ham metin taşıyabilir).
+**Veri kuralı:** Buluta (Claude) yalnızca `EgressGateway.authorize()` onaylı anonim metin gider; başka hiçbir yerden dış istek atılmaz. Ham metin/dosya adı loglanmaz; `exc_info=True` ve `str(e)` loglama yasak (ham metin taşıyabilir). Claude API kodu yazmadan önce `claude-api` skill'ini yükle (SDK 1.x: `messages.parse`, `output_format`, `output_config.effort`).
 
 ## Configuration
 

@@ -1,25 +1,29 @@
-# Kapalı Devre Anonimizasyon & Sınıflandırma Servisi
+# Anonimizasyon, Doktor Raporu & Sınıflandırma Servisi
 
-Tek kiracılı (tek müşteri şirketi) servis. Müşteri dosya gönderir → servis lokal OCR,
-anonimizasyon, doğrulama kapısı ve lokal LLM sınıflandırma yapar → JSON rapor döner.
-**Hiçbir veri sunucu dışına çıkmaz.**
+Tek kiracılı servis. Müşteri dosya gönderir → sunucuda (Türkiye) OCR + anonimizasyon + doğrulama kapısı →
+yalnızca anonim metin egress gateway üzerinden Claude'a → doktor raporu + sınıflandırma JSON döner.
+**Kişisel veri sunucu dışına çıkmaz; ham veri diske yazılmaz.**
 
 ## Akış
 
 ```
 POST /jobs (PDF/PNG/JPG/TXT)
   │
-  ├─ 1. OCR         birincil: Vision-LLM (GLM-OCR / PaddleOCR-VL)   ikincil: Tesseract (paralel)
-  │                 completeness = len(birincil)/len(tesseract) → <0.6 ise "olası atlama" uyarısı
-  ├─ 2. Anonimize   regex + isim sözlüğü (src/anonymizer.py, 12 katman)
-  ├─ 3. KAPI        a) residual_heuristics  — deterministik (etiket sonrası kalıntı, TC, tarih, tel, e-posta)
-  │                 b) cross_ocr            — Tesseract'ın gördüğü PII nihai metinde var mı?
-  │                 c) llm_judge            — Qwen3 "kalan PII var mı?" (JSON)
-  │                 d) gliner (opsiyonel)   — neondijital/neonredact-tr-model
-  │                 herhangi biri bulgu üretirse → status: needs_review, metin/sınıf DÖNMEZ
-  ├─ 4. Sınıflandır lokal LLM (templates/classification_prompt.txt) + keyword validator
-  └─ 5. Rapor       JSON: anonim metin, kategori, güven, gerekçe, kapı denetimi, zamanlamalar
+  ├─ 1. OCR         Tesseract (CPU). GPU modunda: Vision-LLM birincil + Tesseract çapraz (completeness uyarısı)
+  ├─ 2. Anonimize   a) GLiNER-tr NER (service/anonymization/ner.py): isim/şehir/kurum/TC/tel/tarih — etiketsiz de
+  │                    tam metin + BÜYÜK HARF için harf-duyarlı geçiş + başlık bölgesi dar-etiket geçişi; tıbbi sözlük koruması
+  │                 b) regex + isim sözlüğü (src/anonymizer.py): TC/tarih/tescil/unvan/81 il (OCR-bulanık dahil), kalıntı temizliği
+  ├─ 3. KAPI        residual_heuristics (deterministik) + cross_ocr (NER adayları + ikincil OCR'ın gördüğü PII nihai metinde var mı?)
+  │                 [+ llm_judge: yalnızca lokal LLM varsa]   → bulgu/hata varsa: needs_review (fail-closed)
+  ├─ 4. EGRESS      service/egress.py: kapı geçti mi + hiçbir PII adayı çıktıda yok + TC/tarih/tel/e-posta/URL yok
+  │                 → red: needs_review; kabul: hash+boyut+hedef+model denetim tablosuna (metin yazılmaz)
+  ├─ 5. Claude      claude-opus-5, yapılandırılmış JSON (DoctorReport): kategori, güven, gerekçe, histolojik tip,
+  │                 primer bölge, evre/derece, belirteçler, önemli bulgular, tedavi/plan, ≤3 cümle özet, belirsizlikler
+  │                 + keyword doğrulama (src/validator.py). Ağ: squid allowlist → yalnızca api.anthropic.com:443
+  └─ 6. Sonuç       JSON: anonim metin, report (yapılandırılmış + markdown), classification, gate, egress, timings
 ```
+
+`cloud.enabled: false` iken (kapalı devre GPU modu) 4-5 yerine lokal LLM sınıflandırması çalışır.
 
 ## API
 
@@ -52,9 +56,12 @@ curl -H "X-API-Key: $KEY" -H "X-Filename: rapor.pdf" -H "X-Ref: HBYS-123456" \
   "ocr": {"engine": "glm-ocr", "alt_engine": "tesseract", "completeness": 0.86, "warnings": []},
   "anonymization": {"fields_removed": ["TC Kimlik No", "Hasta adı", "..."], "cross_ocr_candidates": 12},
   "gate": {"passed": true, "layers_run": ["cross_ocr", "residual_heuristics", "llm_judge"], "findings": []},
+  "egress": {"allowed": true, "text_sha256": "…", "chars": 812, "host": "api.anthropic.com", "model": "claude-opus-5"},
+  "report": {"rapor": {"kategori": "Brain", "guven": 0.92, "histolojik_tip": "Glioblastom", "belirtecler": [{"ad": "IDH", "deger": "wild tip"}],
+             "onemli_bulgular": ["…"], "ozet": "…", "belirsizlikler": []}, "markdown": "**Kategori:** Brain …", "usage": {"input_tokens": 1200}},
   "classification": {"validated_category": "Brain", "adjusted_confidence": 1.0, "histological_type": "Glioblastom", "reasoning": "..."},
   "anonymized_text": "...",
-  "timings": {"ocr": 69.5, "anonymize": 0.1, "gate": 73.2, "classify": 73.4}
+  "timings": {"ocr": 3.1, "anonymize": 1.8, "gate": 0.2, "report": 9.4}
 }
 ```
 
@@ -68,11 +75,10 @@ Ham metin **hiçbir durumda** dönmez/loglanmaz; hata mesajları yalnızca istis
 
 ## Çalıştırma
 
-### Geliştirme (Mac, Ollama)
+### Geliştirme (hibrit)
 ```bash
-/opt/homebrew/bin/ollama serve          # ARM64 Ollama (Intel binary Metal kullanamaz!)
-ollama pull glm-ocr && ollama pull qwen3:8b
-ANAMNEZ_SERVER__API_KEY=devkey .venv/bin/python -m service
+export ANTHROPIC_API_KEY=sk-ant-...      # veya cloud.api_key_file
+ANAMNEZ_SERVER__API_KEY=devkey ANAMNEZ_CLOUD__ENABLED=true ANAMNEZ_LLM__ENABLED=false .venv/bin/python -m service
 curl -H "X-API-Key: devkey" -H "X-Filename: rapor.pdf" --data-binary @rapor.pdf http://127.0.0.1:8080/jobs
 ```
 Konfig: `config/service.yaml`; her anahtar `ANAMNEZ_<BÖLÜM>__<ANAHTAR>` ile ezilebilir.
