@@ -1,10 +1,11 @@
 # Hibrit dağıtım — GPU'SUZ sunucu (CPU) + Claude API
 #
-#   api          : OCR (tesseract) + GLiNER NER + regex + kapı + egress gateway  (edge ağı; DOĞRUDAN internet yok)
-#   egress-proxy : squid, yalnızca api.anthropic.com:443'e CONNECT (allowlist) — sunucunun tek çıkış noktası
+#   api          : OCR + GLiNER NER + regex + kapı + egress gateway — YALNIZCA 'internal' ağda (internete ROTASI YOK)
+#   egress-proxy : squid (internal+edge), yalnızca api.anthropic.com:443'e CONNECT — sunucunun tek çıkış noktası
+#   ingress      : nginx (internal+edge), iç ağdan 8080'i api'ye iletir (Docker internal ağda port publish desteklenmez)
 #
-# Ağ: api → egress-proxy → internet. nftables (deploy/nftables.cpu.conf) yalnızca proxy konteynerinin
-# (sabit IP 10.200.2.20) 443/53'e çıkmasına izin verir; api konteyneri dışarı paket atamaz.
+# İki bağımsız engel: (1) Docker: api'nin internal ağ dışına rotası yok; (2) nftables (deploy/nftables.cpu.conf):
+# yalnızca proxy (10.200.2.20) 443/53'e çıkabilir. Mac/Windows Docker Desktop'ta (nftables yok) 1. engel tek başına yeter.
 #
 #   openssl rand -hex 32 > deploy/api_key.txt ; echo "sk-ant-..." > deploy/anthropic_key.txt
 #   API_BIND=10.0.0.5 docker compose -f deploy/docker-compose.cpu.yml up -d
@@ -12,6 +13,11 @@
 name: anamnez-hybrid
 
 networks:
+  internal:
+    driver: bridge
+    internal: true            # ← api burada; dışarı rota yok
+    ipam:
+      config: [{ subnet: 10.200.1.0/24 }]
   edge:
     driver: bridge
     ipam:
@@ -25,6 +31,8 @@ services:
     image: ubuntu/squid:6.6-24.04_beta
     restart: unless-stopped
     networks:
+      internal:
+        ipv4_address: 10.200.1.20
       edge:
         ipv4_address: 10.200.2.20
     volumes:
@@ -36,6 +44,20 @@ services:
       timeout: 5s
       retries: 5
 
+  ingress:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    networks: [internal, edge]
+    ports:
+      - "${API_BIND:-127.0.0.1}:8080:8080"
+    volumes:
+      - ./nginx/ingress.conf:/etc/nginx/conf.d/default.conf:ro
+    tmpfs:
+      - /var/cache/nginx:size=128m     # gövde tamponu tmpfs'te (diske inmez)
+      - /var/run
+    security_opt: [no-new-privileges:true]
+    depends_on: [api]
+
   api:
     build:
       context: ..
@@ -43,12 +65,10 @@ services:
     image: anamnez-service:1.2.0
     restart: unless-stopped
     networks:
-      edge:
-        ipv4_address: 10.200.2.10
+      internal:
+        ipv4_address: 10.200.1.10
     depends_on:
       egress-proxy: { condition: service_healthy }
-    ports:
-      - "${API_BIND:-127.0.0.1}:8080:8080"
     stop_grace_period: 60s
     environment:
       ANAMNEZ_SERVER__HOST: "0.0.0.0"
@@ -63,7 +83,7 @@ services:
       ANAMNEZ_CLOUD__PROVIDER: "anthropic"
       ANAMNEZ_CLOUD__MODEL: "claude-opus-5"
       ANAMNEZ_CLOUD__API_KEY_FILE: "/run/secrets/anthropic_key"
-      ANAMNEZ_CLOUD__PROXY: "http://10.200.2.20:3128"
+      ANAMNEZ_CLOUD__PROXY: "http://10.200.1.20:3128"
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       OMP_NUM_THREADS: "4"
