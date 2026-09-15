@@ -711,6 +711,31 @@ class ReportAnonymizer:
                 text = text[:m.start()] + "[ISIM_SILINDI]" + text[end:]
                 report.fields_removed.append("İsim (sözlük)")
 
+        # Etiketi bozuk okunmuş satırlar: "AVI SOXAOT: BURAK ERDOĞDU" — değer 2-3 özel isim kelimesi,
+        # ilk kelime ad sözlüğünde, etiket tıbbi değil → değeri sil (sözlükte olmayan soyad da gider)
+        label_val = re.compile(
+            rf'^([^:\n]{{1,30}}):[ \t]*([{tr_chars}]{{2,20}}(?:[ \t]+[{tr_chars}]{{2,20}}){{1,2}})[ \t]*$',
+            re.MULTILINE,
+        )
+        medical_label = re.compile(r'TANI|MAKRO|M[İI]KRO|KL[İI]N[İI]K|Ş[İI]KAYET|BULGU|MATERYAL|TETK[İI]K|SERV[İI]S|B[ÖO]L[ÜU]M|'
+                                   r'ÖYK[ÜU]|OYKU|[İI]STEM|TEDAV[İI]|[İI]LA[ÇC]|SONU[ÇC]|YER[İI]|T[İI]P[İI]|NUMUNE|DOKU|ADET|TÜR[ÜU]|TURU',
+                                   re.IGNORECASE)
+        for m in reversed(list(label_val.finditer(text))):
+            if self._is_in_medical_section(m.start(), medical_sections) or medical_label.search(m.group(1)):
+                continue
+            words = m.group(2).split()
+            w1u = words[0].upper()
+            if not (w1u in NAME_DICT["first_names"] or _normalize_turkish(w1u) in NAME_DICT["first_names"]):
+                continue
+            if any(w.upper() in AMBIGUOUS_NAME_WORDS for w in words):
+                continue
+            # değer büyük harfle başlayan (veya tamamı büyük) kelimelerden oluşmalı
+            if not all(w[0].isupper() for w in words):
+                continue
+            vs, ve = m.start(2), m.end(2)
+            text = text[:vs] + "[ISIM_SILINDI]" + text[ve:]
+            report.fields_removed.append("İsim (bozuk etiket + sözlük)")
+
         # Apostrof/tırnak ile yapışık isimler: 'SEDA YILMAZ
         apost_pattern = rf"""['"'`]\s*([{tr_chars}]{{2,15}})\s+([{tr_chars}]{{2,20}})"""
         for m in reversed(list(re.finditer(apost_pattern, text))):

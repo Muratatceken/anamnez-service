@@ -264,6 +264,10 @@ class ResidualHeuristicLayer:
         for m in self.pair.finditer(text):
             if m.group(1) in self.first and m.group(2) in self.surnames:
                 out.append(Finding(text=m.group(0), type="person", source=self.name, reason="sözlük ad+soyad"))
+        # "<bozuk etiket>: <Ad> <Soyad>" — ad sözlükte, soyad ne olursa olsun (OCR etiketi bozduğunda regex kaçırır)
+        for m in re.finditer(r"^[^:\n]{1,30}:[ \t]*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]{1,19})[ \t]+([A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]{1,19})[ \t]*$", text, re.M):
+            if m.group(1).upper() in self.first and _n(m.group(2)) not in stop:
+                out.append(Finding(text=f"{m.group(1)} {m.group(2)}", type="person", source=self.name, reason="etiket sonrası sözlük adı"))
         return [f for f in out if _finding_is_real(f, text)]
 
 

@@ -14,3 +14,5 @@ tests/private/*
 .claude/
 logs/
 .attic/
+bench/data/
+bench/results/
