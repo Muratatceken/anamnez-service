@@ -162,7 +162,7 @@ class OCRService:
                     return text
                 result.warnings.append("vision OCR yetersiz metin döndürdü")
             except Exception as e:  # noqa: BLE001
-                logger.warning("Vision OCR hatası: %s", e)
+                logger.warning("Vision OCR hatası: %s", type(e).__name__)
                 result.warnings.append(f"vision OCR hatası: {type(e).__name__}")
                 if not self.fallback:
                     raise

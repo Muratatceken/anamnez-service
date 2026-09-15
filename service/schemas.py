@@ -24,7 +24,7 @@ class JobListItem(BaseModel):
 
 class JobResponse(JobListItem):
     file_sha256: Optional[str] = None
-    result: Optional[dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None   # içinde: report, classification, egress, review_recommended, retryable …
 
 
 class HealthResponse(BaseModel):

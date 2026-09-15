@@ -28,15 +28,30 @@ OFFLINE_ENV = {
 }
 
 
+# Bulut istemcisinin hedefini/loglamasını değiştirebilecek env'ler — servis bunları YOK SAYAR
+UNSAFE_ENV = ("ANTHROPIC_BASE_URL", "ANTHROPIC_LOG", "ANTHROPIC_CUSTOM_HEADERS",
+              "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy")
+
+
 def enforce_offline_env() -> None:
     for k, v in OFFLINE_ENV.items():
         os.environ.setdefault(k, v)
+    for k in UNSAFE_ENV:
+        if k in os.environ:
+            os.environ.pop(k, None)
+
+
+_BOOL_WORDS = {"true": True, "false": False, "yes": True, "no": False, "on": True, "off": False, "1": True, "0": False}
 
 
 def _coerce(value: str, like: Any) -> Any:
-    """Ortam değişkeni string'ini mevcut YAML değerinin tipine çevir."""
+    """Ortam değişkeni string'ini mevcut YAML değerinin tipine çevir (YAML'da yoksa bool kelimeleri yine bool)."""
     if isinstance(like, bool):
-        return value.lower() in {"1", "true", "yes", "on"}
+        if value.lower() not in _BOOL_WORDS:
+            raise ValueError(f"boolean bekleniyor: {value!r}")
+        return _BOOL_WORDS[value.lower()]
+    if like is None and value.lower() in _BOOL_WORDS:
+        return _BOOL_WORDS[value.lower()]
     if isinstance(like, int):
         return int(value)
     if isinstance(like, float):

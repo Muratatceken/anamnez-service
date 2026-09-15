@@ -69,13 +69,13 @@ def _load_medical_vocab() -> set[str]:
     medüller invaziv duktal lobüler skuamöz ürotelyal seröz müsinöz nöroendokrin metastaz metastatik metastazı
     tümör tümörü tümoral kitle kitlesi lezyon lezyonu nodül nodülü biyopsi biyopsisi rezeksiyon rezeksiyonu
     eksizyon eksizyonu materyal materyali grade derece evre pozitif negatif mutasyon mutant wild tip tipi
-    hodgkin non-hodgkin diffüz büyük b hücreli myeloid lenfoid akut kronik anemi trombositoz fibrozis
+    hodgkin non-hodgkin diffüz hücreli myeloid lenfoid akut kronik anemi trombositoz fibrozis
     hipersellüler hiposellüler displazi hiperplazi atipi atipik benign malign selim habis in situ
     invazyon perinöral lenfovasküler vasküler cerrahi sınır sınırı nekroz nekrotik mitoz mitotik
     immünohistokimya immünhistokimya boyama boyanma ekspresyon pozitiflik negatiflik oran oranında
     akciğer meme mide kolon rektum prostat mesane böbrek karaciğer pankreas over uterus serviks tiroid
     testis beyin deri kemik ilik iliği yumuşak doku plevra özofagus safra timus lenf nod nodu bezi
-    sağ sol üst alt orta lob lobu segment kadran ön arka medial lateral proksimal distal
+    lob lobu segment kadran medial lateral proksimal distal
     kemoterapi radyoterapi indüksiyon konsolidasyon nakil tedavi tedavisi takip kontrol sevk
     bethesda gleason breslow fuhrman isup figo tirads who dsö
     """.split()
@@ -96,8 +96,12 @@ MEDICAL_VOCAB = _load_medical_vocab()
 
 
 def looks_medical(span: str) -> bool:
-    toks = [_tr_fold(t) for t in re.split(r"[^\wçğıöşüÇĞİÖŞÜ]+", span) if t]
-    return any(t in MEDICAL_VOCAB for t in toks) or bool(MEDICAL_GUARD.match(span.strip()))
+    """Span PII değil, tıbbi ifade mi? Muhafazakâr: alfabetik (≥3 harf) tokenlerin HEPSİ tıbbi sözlükteyse.
+    'Polisitemi Vera' → (polisitemi, vera) hepsi tıbbi → True;  'Selim Kaya' → kaya tıbbi değil → False."""
+    if MEDICAL_GUARD.match(span.strip()):
+        return True
+    toks = [_tr_fold(t) for t in re.split(r"[^\wçğıöşüÇĞİÖŞÜ]+", span) if len(t) >= 3 and t.isalpha()]
+    return bool(toks) and all(t in MEDICAL_VOCAB for t in toks)
 
 
 def title_case_preserving_length(text: str) -> str:
@@ -143,7 +147,7 @@ class NERAnonymizer:
         self.model_path = cfg.get("model_path")            # offline dizin (bundle)
         self.threshold = float(cfg.get("threshold", 0.3))
         self.labels = list(cfg.get("labels") or DEFAULT_LABELS)
-        self.chunk_chars = int(cfg.get("chunk_chars", 1200))  # GLiNER ~384 token sınırı
+        self.chunk_tokens = int(cfg.get("chunk_tokens", 250))  # GLiNER max_len=384 kelime-token; pay bırak
         self.case_pass = bool(cfg.get("case_pass", True))    # büyük harfli metin için ikinci geçiş
         # Başlık geçişi: formun üst bölümünde (etiket-değer alanı) DAR etiket kümesiyle ek tahmin.
         # GLiNER'ın tahmini etiket kümesine bağlıdır; bozuk OCR satırlarında ("KDI SOYRDE BÜŞEK YAĞMURDERELİ")
@@ -152,15 +156,18 @@ class NERAnonymizer:
         self.header_lines = int(cfg.get("header_lines", 14))
         self.header_labels = list(cfg.get("header_labels") or ["kişi adı", "hasta adı", "doktor adı"])
         self._model = None
+        self._lock = __import__("threading").Lock()
 
     # ── model ──
     def _load(self):
         if self._model is None:
-            from gliner import GLiNER  # ağır import: tembel
+            with self._lock:
+                if self._model is None:
+                    from gliner import GLiNER  # ağır import: tembel
 
-            src = self.model_path or self.model_name
-            logger.info("GLiNER yükleniyor: %s", src)
-            self._model = GLiNER.from_pretrained(src)
+                    src = self.model_path or self.model_name
+                    logger.info("GLiNER yükleniyor: %s", src)
+                    self._model = GLiNER.from_pretrained(src)
         return self._model
 
     def health(self) -> dict:
@@ -170,18 +177,36 @@ class NERAnonymizer:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "engine": "gliner", "model": self.model_name, "error": type(e).__name__}
 
-    # ── parçalama: satır sınırlarında, ofset koruyarak ──
-    def _chunks(self, text: str) -> list[tuple[int, str]]:
-        chunks, start, buf = [], 0, []
-        size = 0
+    # ── parçalama: GLiNER'ın kelime-token sınırı (max_len=384) — sınır aşılırsa fazlası SESSİZCE atılır,
+    #    bu yüzden token sayısıyla (karakterle değil) parçalanır; ofsetler korunur ──
+    _TOK = re.compile(r"\w+(?:[-_]\w+)*|\S")   # GLiNER'ın kendi kelime ayırıcısıyla aynı
+
+    def _pieces(self, text: str):
+        """(ofset, parça) — satır satır; token sayısı büyük satırlar boşluktan bölünür."""
         pos = 0
         for line in text.splitlines(keepends=True):
-            if size + len(line) > self.chunk_chars and buf:
-                chunks.append((start, "".join(buf)))
-                start, buf, size = pos, [], 0
-            buf.append(line)
-            size += len(line)
+            if len(self._TOK.findall(line)) <= self.chunk_tokens:
+                yield pos, line
+            else:
+                sub_start = 0
+                for m in re.finditer(r"\S+\s*", line):
+                    if len(self._TOK.findall(line[sub_start:m.end()])) > self.chunk_tokens:
+                        yield pos + sub_start, line[sub_start:m.start()]
+                        sub_start = m.start()
+                yield pos + sub_start, line[sub_start:]
             pos += len(line)
+
+    def _chunks(self, text: str) -> list[tuple[int, str]]:
+        chunks, start, buf, ntok = [], 0, [], 0
+        for off, piece in self._pieces(text):
+            t = len(self._TOK.findall(piece))
+            if ntok + t > self.chunk_tokens and buf:
+                chunks.append((start, "".join(buf)))
+                start, buf, ntok = off, [], 0
+            if not buf:
+                start = off
+            buf.append(piece)
+            ntok += t
         if buf:
             chunks.append((start, "".join(buf)))
         return chunks or [(0, text)]
@@ -198,7 +223,8 @@ class NERAnonymizer:
                 passes.append((chunk, offset, self.labels))
             if self.header_pass:
                 head = "".join(variant.splitlines(keepends=True)[: self.header_lines])
-                passes.append((head, 0, self.header_labels))
+                for offset, chunk in self._chunks(head):
+                    passes.append((chunk, offset, self.header_labels))
         for chunk, offset, labels in passes:
             for e in model.predict_entities(chunk, labels, threshold=self.threshold):
                 s, en = offset + e["start"], offset + e["end"]
@@ -209,26 +235,24 @@ class NERAnonymizer:
         return spans
 
     @staticmethod
-    def _merge(spans: list[NERSpan]) -> list[NERSpan]:
-        """Örtüşen span'ları birleştir (uzun olan / yüksek skor kazanır)."""
+    def _merge(spans: list[NERSpan], text: str) -> list[NERSpan]:
+        """Örtüşen span'ları birleştir; etiket = daha yüksek skorlu (eşitse uzun) span'ınki; metin kaynaktan."""
         out: list[NERSpan] = []
         for sp in sorted(spans, key=lambda x: (x.start, -(x.end - x.start), -x.score)):
             if out and sp.start < out[-1].end:
                 last = out[-1]
-                if sp.end > last.end:
-                    out[-1] = NERSpan(last.start, sp.end, "", last.label, max(last.score, sp.score))
+                end = max(last.end, sp.end)
+                label = sp.label if (sp.score, sp.end - sp.start) > (last.score, last.end - last.start) else last.label
+                out[-1] = NERSpan(last.start, end, text[last.start:end], label, max(last.score, sp.score))
                 continue
-            out.append(sp)
+            out.append(NERSpan(sp.start, sp.end, text[sp.start:sp.end], sp.label, sp.score))
         return out
 
     def anonymize(self, text: str) -> NERResult:
-        spans = self._merge(self._predict(text))
+        spans = self._merge(self._predict(text), text)
         res = NERResult(text=text)
         if not spans:
             return res
-        # Ham dizeleri (birleştirilmiş span için) metinden al
-        for sp in spans:
-            sp.text = text[sp.start:sp.end]
         out, last = [], 0
         for sp in spans:
             out.append(text[last:sp.start])

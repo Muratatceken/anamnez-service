@@ -233,7 +233,7 @@ class ResidualHeuristicLayer:
         ("contact", re.compile(r"(?<!\d)0?\s?\(?5\d{2}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?!\d)")),  # cep
         ("contact", re.compile(r"https?://\S+|www\.\S+")),
         # Maske etiketinden hemen sonra aynı satırda kalan BÜYÜK HARFLİ kelime(ler)
-        ("person", re.compile(r"\[(?:DOKTOR|HASTA_ADI|ISIM|BABA_ADI)_SILINDI\][ \t]+(?:(?:Dr|Prof|Uzm|Doç)\.?[ \t]*)?((?:[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜa-zçğıöşü]{1,}[ \t]*){1,3})", re.M)),
+        ("person", re.compile(r"\[(?:DOKTOR|HASTA_ADI|ISIM|BABA_ADI|PII)_SILINDI\][ \t]+(?:(?:Dr|Prof|Uzm|Doç)\.?[ \t]*)?((?:[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜa-zçğıöşü]{1,}[ \t]*){1,3})", re.M)),
     ]
 
     def __init__(self):
@@ -300,11 +300,17 @@ class CrossOCRLayer:
 
     def check(self, text: str) -> list[Finding]:
         out = []
+        from ..egress import candidate_patterns  # tam + token bazlı, Türkçe-katlanmış kalıplar
+
         folded = tr_fold(text)
-        for tok in sorted(self.candidates):
-            if re.search(r"(?<![\wçğıöşü])" + re.escape(tr_fold(tok)) + r"(?![\wçğıöşü])", folded):
-                out.append(Finding(text=tok, type="person" if tok.isalpha() else "id", source=self.name,
-                                   reason="ikincil OCR'da silinmiş, nihai metinde mevcut"))
+        seen = set()
+        for label, rx in candidate_patterns(self.candidates):
+            if label in seen:
+                continue
+            if rx.search(folded):
+                seen.add(label)
+                out.append(Finding(text=label, type="person" if label.replace(" ", "").isalpha() else "id", source=self.name,
+                                   reason="aday (ikincil OCR/NER) nihai metinde mevcut"))
         return out
 
 

@@ -67,6 +67,7 @@ services:
     networks:
       internal:
         ipv4_address: 10.200.1.10
+    dns: ["127.0.0.1"]        # KARA DELİK: api hiçbir dış ad çözemez (DNS tüneli sızıntısı kapalı); proxy'ye IP ile gider
     depends_on:
       egress-proxy: { condition: service_healthy }
     stop_grace_period: 60s

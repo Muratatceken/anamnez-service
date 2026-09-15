@@ -38,9 +38,11 @@ cp deploy/.env.example .env && nano .env    # API_BIND=<iç ağ IP>
 ```
 
 ### 3. Güvenlik duvarı (tek pinhole)
-`deploy/nftables.cpu.conf` içinde `LAN`, `MGMT`, `DNS` tanımlarını düzenleyin, sonra:
+`deploy/nftables.cpu.conf` içinde `LAN`, `MGMT`, `DNS` tanımlarını düzenleyin, sonra **Docker'dan önce yüklenecek**
+şekilde kalıcılaştırın (açılışta fail-open penceresi olmasın):
 ```bash
-sudo nft -f deploy/nftables.cpu.conf && sudo nft list table inet closedloop | grep PINHOLE
+sudo cp deploy/nftables.cpu.conf /etc/nftables.conf && sudo systemctl enable --now nftables
+sudo nft list table inet closedloop | grep -c PINHOLE      # 1
 ```
 Kural özeti: host ve `api` konteyneri dışarı **hiçbir** paket atamaz; yalnızca squid (`10.200.2.20`) → 443 ve DNS.
 Squid ise yalnızca `CONNECT api.anthropic.com:443` kabul eder (`deploy/squid/squid.conf`).

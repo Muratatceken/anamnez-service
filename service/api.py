@@ -52,7 +52,8 @@ state = State()
 async def lifespan(app: FastAPI):
     state.cfg = load_config()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # her LLM isteğini loglama
+    for name in ("httpx", "httpx2", "anthropic", "httpcore", "urllib3"):
+        logging.getLogger(name).setLevel(logging.WARNING)  # her LLM isteğini loglama (SDK 1.x httpx2 kullanır)
     srv = state.cfg["server"]
     state.pipeline = Pipeline(state.cfg)
     if state.pipeline.ner is not None:   # modeli açılışta yükle (ilk iş yavaş olmasın)

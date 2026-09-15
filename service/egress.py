@@ -27,10 +27,35 @@ ALLOWED_PROVIDERS = {"anthropic": "api.anthropic.com"}
 _FINAL_RULES = [
     ("tc", re.compile(r"\b[1-9]\d{10}\b")),
     ("date", re.compile(r"\b\d{1,2}[./-]\d{1,2}[./-](?:19|20)\d{2}\b")),
+    ("date_short", re.compile(r"\b\d{1,2}[./]\d{1,2}[./]\d{2}\b(?!\s*(?:pozitif|negatif|adet|lenf))")),
+    ("date_iso", re.compile(r"\b(?:19|20)\d{2}-\d{2}-\d{2}\b")),
     ("email", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b")),
     ("phone", re.compile(r"(?<!\d)0?\s?\(?5\d{2}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?!\d)")),
+    ("landline", re.compile(r"(?<!\d)(?:\+90|0)[\s(]?[2-4]\d{2}[\s)]?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?!\d)")),
     ("url", re.compile(r"https?://\S+|www\.\S+")),
 ]
+
+# Aday tokenlerinin tek başına aranmasında elenecek genel kelimeler (kurum/etiket sözcükleri)
+_TOKEN_STOP = {
+    "hastanesi", "hastane", "üniversitesi", "üniversite", "tıp", "fakültesi", "fakülte", "devlet", "şehir", "eğitim",
+    "araştırma", "merkezi", "merkez", "sağlık", "bakanlığı", "laboratuvarı", "kliniği", "klinik", "servisi", "servis",
+    "doktor", "hasta", "prof", "uzm", "doç", "öğr", "üyesi", "dr",
+}
+
+
+def candidate_patterns(candidates: set[str]) -> list[tuple[str, re.Pattern]]:
+    """Adayların tam (boşluk-esnek) ve token bazlı (≥4 harf, stoplist dışı) kalıpları — Türkçe-katlanmış."""
+    pats = []
+    for cand in candidates:
+        c = tr_fold(cand.strip())
+        if len(c) < 3:
+            continue
+        parts = c.split()
+        pats.append((cand, re.compile(r"(?<![\wçğıöşü])" + r"\s+".join(map(re.escape, parts)) + r"(?![\wçğıöşü])")))
+        for t in parts:
+            if len(t) >= 4 and t not in _TOKEN_STOP and not t.isdigit():
+                pats.append((t, re.compile(r"(?<![\wçğıöşü])" + re.escape(t) + r"(?![\wçğıöşü])")))
+    return pats
 
 
 class EgressBlocked(Exception):
@@ -69,9 +94,8 @@ class EgressGateway:
         if not gate.passed:
             reasons.append("kapı geçilmedi")
         folded = tr_fold(text)
-        for cand in candidates:
-            c = tr_fold(cand.strip())
-            if len(c) >= 3 and re.search(r"(?<![\wçğıöşü])" + re.escape(c) + r"(?![\wçğıöşü])", folded):
+        for _, rx in candidate_patterns(candidates):
+            if rx.search(folded):
                 reasons.append("PII adayı çıktıda mevcut")
                 break
         for name, rx in _FINAL_RULES:

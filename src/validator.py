@@ -2,12 +2,19 @@
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
 from .models import ClassificationResult, ValidationResult
 
 logger = logging.getLogger(__name__)
+
+_TR = str.maketrans({"İ": "i", "I": "ı"})
+
+
+def _tr_fold(s: str) -> str:
+    return s.translate(_TR).lower()
 
 
 class Validator:
@@ -45,9 +52,7 @@ class Validator:
                     )
                     adjusted_confidence *= 0.7  # Güveni düşür
 
-            elif keyword_result["matches"]:
-                # Uyumlu - güveni artır
-                adjusted_confidence = min(1.0, adjusted_confidence * 1.1)
+            # Uyumlu eşleşme güveni ARTIRMAZ (LLM'in kalibrasyonu bozulmasın); yalnızca çelişkide düşürülür
 
         # 2. Güven eşik kontrolü
         if adjusted_confidence < self.confidence_threshold:
@@ -80,15 +85,26 @@ class Validator:
             confidence_adjusted=round(adjusted_confidence, 3),
         )
 
+    # Siteye özgü olmayan (birçok kanserde geçen) anahtarlar: kategori kanıtı sayılmaz
+    GENERIC_KEYWORDS = {"er", "pr", "ki67", "ki-67", "p53", "lenf nodu", "lenf", "skuamöz hücreli karsinom", "adenokarsinom",
+                        "karsinom", "metastaz", "metastatik", "tümör", "malign", "grade", "evre", "biyopsi", "her2"}
+
+    @staticmethod
+    def _kw_rx(kw: str) -> "re.Pattern":
+        parts = [re.escape(w) for w in kw.split()]
+        return re.compile(r"(?<![\wçğıöşü])" + r"\s+".join(parts) + r"(?![\wçğıöşü])")
+
     def _keyword_validation(self, llm_category: str, text: str) -> dict:
-        """Metindeki anahtar kelimelere göre kategori öner."""
-        text_lower = text.lower()
+        """Metindeki anahtar kelimelere göre kategori öner (kelime sınırlı, Türkçe-duyarsız)."""
+        text_lower = _tr_fold(text)
         category_scores = {}
 
         for category, keywords in self.keyword_hints.items():
             matches = []
             for kw in keywords:
-                if kw.lower() in text_lower:
+                if kw.lower() in self.GENERIC_KEYWORDS:
+                    continue
+                if self._kw_rx(_tr_fold(kw)).search(text_lower):
                     matches.append(kw)
             if matches:
                 category_scores[category] = {
@@ -127,10 +143,13 @@ class Validator:
             if "metastaz" in (result.primary_site or "").lower():
                 warnings.append("Primer tümör yeri metastaz bölgesi olarak belirtilmiş olabilir")
 
-        # Benign / malign kontrolü
-        benign_keywords = ["benign", "iyi huylu", "selim", "reaktif", "negatif"]
-        malign_keywords = ["malign", "kötü huylu", "karsinom", "sarkom", "lenfoma",
-                           "melanom", "blastom", "adenokarsinom", "karsinoma"]
+        # Benign / malign kontrolü ('negatif' tek başına benign kanıtı DEĞİLDİR: "HER2 negatif")
+        benign_keywords = ["benign", "iyi huylu", "selim", "reaktif değişiklik", "reaktif hiperplazi",
+                           "malignite saptanmadı", "malignite izlenmedi", "malignite görülmedi", "malignite yok",
+                           "malign bulgu saptanmadı", "displazi saptanmadı"]
+        malign_keywords = ["malign", "kötü huylu", "karsinom", "sarkom", "lenfoma", "lösemi", "myelom", "seminom",
+                           "melanom", "blastom", "adenokarsinom", "karsinoma", "mezotelyoma", "nöroendokrin tümör",
+                           "germ hücreli", "polisitemi vera", "myelofibrozis", "gbm", "aml", "kll", "kml"]
 
         # Olumsuzlanmış ifadeleri ("malignite açısından negatif", "malignite saptanmadı")
         # malign sayma

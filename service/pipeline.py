@@ -19,8 +19,8 @@ from .anonymization.ner import NERAnonymizer
 from .backends.llm import make_llm
 from .backends.ocr import OCRService
 from .classification import Classifier
-from .egress import EgressBlocked, EgressGateway
-from .report import ReportGenerator, report_to_markdown
+from .egress import _FINAL_RULES, EgressBlocked, EgressGateway
+from .report import CloudError, ModelRefusal, ReportGenerator, ReportTruncated, TransientCloudError, redact_report, report_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,9 @@ class PipelineResult:
     egress: Optional[dict] = None          # egress kararı (hash, izin, gerekçe)
     anonymized_text: Optional[str] = None
     error: Optional[str] = None
+    retryable: bool = False                # failed + retryable → istemci daha sonra yeniden gönderebilir
+    review_recommended: bool = False       # done ama insan bakışı önerilir (okunabilirlik/güven/belirsizlik)
+    review_reasons: list[str] = field(default_factory=list)
     timings: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
@@ -61,7 +64,10 @@ class Pipeline:
         self.classifier = Classifier(cls_cfg, self.llm) if (cls_cfg.get("enabled", True) and self.llm is not None) else None
         cloud_cfg = cfg.get("cloud", {}) or {}
         self.egress = EgressGateway(cloud_cfg, audit_db_path=cfg.get("storage", {}).get("egress_audit_db"))
-        self.reporter = ReportGenerator(cloud_cfg, validator_cfg=cls_cfg) if cloud_cfg.get("enabled", False) else None
+        self.reporter = ReportGenerator(cloud_cfg, validator_cfg=cls_cfg, host=self.egress.host) if cloud_cfg.get("enabled", False) else None
+        self.cloud_attempts = int(cloud_cfg.get("attempts", 3))
+        self.cloud_backoff = float(cloud_cfg.get("backoff_seconds", 5))
+        self.review_below = float(cls_cfg.get("require_human_review_below", 0.4))
         st = cfg.get("storage", {})
         self.store_anonymized_text = bool(st.get("store_anonymized_text", True))
         # needs_review'da metin: "masked" (varsayılan: kapı bulguları da maskelenir) | "full" | "none"
@@ -135,15 +141,16 @@ class Pipeline:
             res.gate = gate.as_dict()
             if not gate.passed:
                 res.status = "needs_review"
+                masked = anon_text
+                for i, f in enumerate(gate.findings, 1):
+                    if f.text:
+                        masked = masked.replace(f.text, f"[KAPI_BULGUSU_{i}:{f.type}]")
                 if self.review_text_mode == "full":
-                    res.anonymized_text = anon_text
+                    res.anonymized_text = anon_text          # bulgu metni de kalır (yalnızca kapalı devre inceleme UI)
                 elif self.review_text_mode == "masked":
-                    # Kapının yakaladığı kalıntılar da maskelenir; bulgu metni yerine yalnızca tür/uzunluk döner
-                    masked = anon_text
-                    for i, f in enumerate(gate.findings, 1):
-                        if f.text:
-                            masked = masked.replace(f.text, f"[KAPI_BULGUSU_{i}:{f.type}]")
                     res.anonymized_text = masked
+                if self.review_text_mode != "full":
+                    # Bulgu METNİ yalnızca 'full' modunda; diğerlerinde tür/uzunluk
                     res.gate["findings"] = [
                         {"type": f.type, "source": f.source, "chars": len(f.text), "reason": f.reason, "index": i}
                         for i, f in enumerate(gate.findings, 1)
@@ -152,21 +159,62 @@ class Pipeline:
                 logger.warning("Kapı geçilemedi: %s bulgu, %s hata", len(gate.findings), len(gate.errors))
                 return res
 
-            # 4a. Bulut raporu (Claude) — egress gateway'den geçmeden HİÇBİR ŞEY çıkmaz
+            # 4a. Bulut raporu (Claude) — egress gateway'den geçmeden HİÇBİR ŞEY çıkmaz;
+            #     her deneme ayrı egress onayı + denetim kaydı alır (SDK retry kapalı)
             if self.reporter is not None:
                 t = time.time()
-                try:
-                    d = self.egress.authorize(anon_text, gate, cross, job_id=job_id)
-                    res.egress = {"allowed": True, "text_sha256": d.text_sha256, "chars": d.chars,
-                                  "host": self.egress.host, "model": self.egress.model}
-                except EgressBlocked as e:
-                    res.egress = {"allowed": False, "reasons": str(e).split("; ")}
-                    res.status = "needs_review"
-                    res.timings = timings
-                    return res
-                rep_ = self.reporter.generate(anon_text)
+                rep_ = None
+                for attempt in range(1, self.cloud_attempts + 1):
+                    try:
+                        d = self.egress.authorize(anon_text, gate, cross, job_id=job_id)
+                        res.egress = {"allowed": True, "text_sha256": d.text_sha256, "chars": d.chars,
+                                      "host": self.egress.host, "model": self.egress.model, "attempts": attempt}
+                    except EgressBlocked as e:
+                        res.egress = {"allowed": False, "reasons": str(e).split("; ")}
+                        res.status = "needs_review"
+                        res.timings = timings
+                        return res
+                    try:
+                        rep_ = self.reporter.generate(anon_text)
+                        break
+                    except TransientCloudError as e:
+                        logger.warning("Bulut geçici hata (%s, deneme %d/%d): %s", job_id[:8], attempt, self.cloud_attempts, e)
+                        if attempt == self.cloud_attempts:
+                            res.error = f"TransientCloudError:{e}"
+                            res.retryable = True
+                            res.timings = timings
+                            return res
+                        time.sleep(self.cloud_backoff * attempt)
+                    except ModelRefusal as e:
+                        res.status = "needs_review"
+                        res.review_reasons.append(f"model reddetti ({e.category})")
+                        res.timings = timings
+                        return res
+                    except ReportTruncated as e:
+                        res.error = f"ReportTruncated:{e}"
+                        res.timings = timings
+                        return res
+                    except CloudError as e:
+                        res.error = f"CloudError:{e}"
+                        res.timings = timings
+                        return res
+                # Model yanıtı da PII taramasından geçer (serbest metne kalıntı sızmasın)
+                hits = redact_report(rep_["rapor"], cross, _FINAL_RULES)
+                if hits:
+                    rep_["warnings"] = list(rep_.get("warnings", [])) + [f"rapor alanı maskelendi: {', '.join(hits)}"]
+                    res.review_recommended = True
+                    res.review_reasons.append("rapor çıktısında PII benzeri kalıntı maskelendi")
                 rep_["markdown"] = report_to_markdown(rep_)
                 res.report = rep_
+                rap = rep_["rapor"]
+                if rap.get("okunabilirlik") == "kotu":
+                    res.review_recommended = True; res.review_reasons.append("okunabilirlik: kötü")
+                if rap.get("malignite_durumu") == "belirsiz":
+                    res.review_recommended = True; res.review_reasons.append("malignite belirsiz")
+                if min(rap.get("guven", 0.0), rep_["adjusted_confidence"]) < self.review_below:
+                    res.review_recommended = True; res.review_reasons.append("düşük güven")
+                if any("İnsan incelemesi" in w for w in rep_.get("warnings", [])):
+                    res.review_recommended = True; res.review_reasons.append("doğrulama uyarısı")
                 res.classification = {
                     "category": rep_["rapor"]["kategori"], "confidence": rep_["rapor"]["guven"],
                     "validated_category": rep_["validated_category"], "adjusted_confidence": rep_["adjusted_confidence"],

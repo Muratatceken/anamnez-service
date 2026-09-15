@@ -20,8 +20,13 @@ POST /jobs (PDF/PNG/JPG/TXT)
   ├─ 5. Claude      claude-opus-5, yapılandırılmış JSON (DoctorReport): kategori, güven, gerekçe, histolojik tip,
   │                 primer bölge, evre/derece, belirteçler, önemli bulgular, tedavi/plan, ≤3 cümle özet, belirsizlikler
   │                 + keyword doğrulama (src/validator.py). Ağ: squid allowlist → yalnızca api.anthropic.com:443
-  └─ 6. Sonuç       JSON: anonim metin, report (yapılandırılmış + markdown), classification, gate, egress, timings
+  └─ 6. Sonuç       JSON: anonim metin, report (yapılandırılmış + markdown), classification, gate, egress, timings,
+                    review_recommended + review_reasons (okunabilirlik kötü / güven düşük / malignite belirsiz / rapor
+                    çıktısında kalıntı maskelendi), retryable (geçici bulut hatası → istemci yeniden gönderir)
 ```
+Bulut çağrısı: SDK yeniden denemesi kapalı; her deneme (`cloud.attempts`, varsayılan 3) egress gateway'den ayrı onay
+ve denetim satırı alır. Model yanıtı da PII adayları + son kurallarla taranır; isabet olan alan `[RAPOR_KALINTI_SILINDI]`
+olur. `stop_reason` refusal → needs_review, max_tokens → failed (ReportTruncated).
 
 `cloud.enabled: false` iken (kapalı devre GPU modu) 4-5 yerine lokal LLM sınıflandırması çalışır.
 
