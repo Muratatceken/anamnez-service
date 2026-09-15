@@ -4,6 +4,9 @@ data/
 __pycache__/
 *.pyc
 deploy/api_key.txt
+deploy/anthropic_key.txt
+deploy/*.key
+deploy/*_key.txt
 deploy/models/
 bundle/
 output/
