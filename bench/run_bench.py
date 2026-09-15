@@ -115,7 +115,7 @@ def make_llm_from_spec(spec: str, timeout: float):
 
 # ── ana döngü ──────────────────────────────────────────────────────────────
 def run(data_dir: Path, ocr_specs: list[str], llm_spec: str | None, timeout: float, limit: int | None,
-        out_dir: Path, classify: bool, engine: str = "ner+regex") -> dict:
+        out_dir: Path, classify: bool, engine: str = "ner+regex", cloud: str | None = None) -> dict:
     meta = json.loads((data_dir / "meta.json").read_text(encoding="utf-8"))
     if limit:
         meta = meta[:limit]
@@ -140,6 +140,15 @@ def run(data_dir: Path, ocr_specs: list[str], llm_spec: str | None, timeout: flo
     if llm and classify:
         from service.classification import Classifier
         classifier = Classifier({"confidence_threshold": 0.6, "require_human_review_below": 0.4}, llm)
+    reporter = egress = None
+    if cloud:
+        from service.egress import _FINAL_RULES, EgressGateway
+        from service.report import ReportGenerator, redact_report
+        prov, model = cloud.split(":", 1)
+        key_file = {"gemini": "deploy/gemini_key.txt", "anthropic": "deploy/anthropic_key.txt"}[prov]
+        cfg = {"enabled": True, "provider": prov, "model": model, "effort": "high", "api_key_file": key_file, "timeout": timeout}
+        egress = EgressGateway(cfg)
+        reporter = ReportGenerator(cfg, host=egress.host)
 
     tess = TesseractOCR({"lang": "tur+eng", "tesseract_timeout": timeout})
     backends = [make_ocr(s, timeout) for s in ocr_specs]
@@ -188,6 +197,22 @@ def run(data_dir: Path, ocr_specs: list[str], llm_spec: str | None, timeout: flo
                 except Exception as e:  # noqa: BLE001
                     row["cls"] = f"ERR:{type(e).__name__}"
                     row["cls_ok"] = False
+            if reporter and g.passed and len(anon_text) > 40:
+                t1 = time.time()
+                d = egress.decide(anon_text, g, cands)
+                if not d.allowed:
+                    row["cls"] = "EGRESS_BLOCK"; row["cls_ok"] = False; row["egress_reasons"] = d.reasons
+                else:
+                    try:
+                        r = reporter.generate(anon_text)
+                        hits = redact_report(r["rapor"], cands, _FINAL_RULES)
+                        row["cls"] = r["validated_category"]; row["cls_ok"] = r["validated_category"] == item["category"]
+                        row["guven"] = r["rapor"]["guven"]; row["okunabilirlik"] = r["rapor"]["okunabilirlik"]
+                        row["belirsizlik_n"] = len(r["rapor"]["belirsizlikler"]); row["report_redacted"] = hits
+                        row["tokens"] = r["usage"]; row["report_seconds"] = round(time.time() - t1, 1)
+                        row["rapor"] = r["rapor"]
+                    except Exception as e:  # noqa: BLE001
+                        row["cls"] = f"ERR:{type(e).__name__}"; row["cls_ok"] = False
             rows.append(row)
             print(f"{item['file'][:44]:44} {name:18} cer={row['cer']:.2f} pii={row['pii_read']}/{row['pii_total']} "
                   f"keep={row['keep_read']}/{row['keep_total']} leak={row['leak']} over={row['over_del']} "
@@ -226,6 +251,10 @@ def summarize(rows: list[dict]) -> dict:
             "gate_fail_with_leak": sum(1 for r in rs if not r["gate_pass"] and r["leak"]),
             "gate_pass_with_leak": sum(1 for r in rs if r["gate_pass"] and r["leak"]),   # ← KRİTİK: 0 olmalı
             "cls_acc": round(sum(r["cls_ok"] for r in cls_rows) / len(cls_rows), 3) if cls_rows else None,
+            "cls_n": len(cls_rows),
+            "report_redacted": sum(1 for r in rs if r.get("report_redacted")),
+            "okunabilirlik": {k: sum(1 for r in rs if r.get("okunabilirlik") == k) for k in ("iyi", "orta", "kotu")} if any("okunabilirlik" in r for r in rs) else None,
+            "report_sec_mean": round(sum(r.get("report_seconds", 0) for r in rs) / max(1, sum(1 for r in rs if "report_seconds" in r)), 1),
             "sec_mean": round(sum(r["seconds"] for r in rs) / n, 1),
             "by_style": {
                 st: {"cer": round(sum(r["cer"] for r in rs if r["style"] == st) / max(1, sum(1 for r in rs if r["style"] == st)), 3),
@@ -259,5 +288,6 @@ if __name__ == "__main__":
     ap.add_argument("--limit", type=int)
     ap.add_argument("--out", default="bench/results")
     ap.add_argument("--engine", default="ner+regex", choices=["ner+regex", "regex"])
+    ap.add_argument("--cloud", help="bulut raporu: gemini:<model> | anthropic:<model> (anahtar: deploy/*_key.txt)")
     a = ap.parse_args()
-    run(Path(a.data), a.ocr, a.llm, a.timeout, a.limit, Path(a.out), classify=not a.no_classify, engine=a.engine)
+    run(Path(a.data), a.ocr, a.llm, a.timeout, a.limit, Path(a.out), classify=not a.no_classify, engine=a.engine, cloud=a.cloud)

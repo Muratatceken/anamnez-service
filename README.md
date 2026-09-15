@@ -13,7 +13,7 @@ POST /jobs ─► OCR (Tesseract; GPU varsa Vision-LLM) ─► GLiNER-tr NER + r
 İki dağıtım modu, aynı kod:
 | Mod | OCR | Anonimizasyon | Rapor/sınıflandırma | Dışarı çıkan |
 |---|---|---|---|---|
-| **Hibrit (varsayılan, GPU gerekmez)** | Tesseract (CPU) | GLiNER-tr + regex (CPU) | Claude API | yalnızca anonim metin (hash'li denetim kaydı) |
+| **Hibrit (varsayılan, GPU gerekmez)** | Tesseract (CPU) | GLiNER-tr + regex (CPU) | Claude API veya Gemini API | yalnızca anonim metin (hash'li denetim kaydı) |
 | Kapalı devre (GPU) | GLM-OCR / PaddleOCR-VL (vLLM) | GLiNER-tr + regex + LLM yargıç | lokal Qwen3 | hiçbir şey |
 
 ## Özellikler
@@ -25,8 +25,10 @@ POST /jobs ─► OCR (Tesseract; GPU varsa Vision-LLM) ─► GLiNER-tr NER + r
 - **Egress gateway:** buluta çıkmadan önce son kontrol (kapı geçti mi, bilinen PII dizesi var mı, TC/tarih/telefon
   kalıntısı var mı); her çıkış hash+boyut+hedef ile denetim tablosuna yazılır (metin yazılmaz). Ağda squid allowlist +
   nftables: yalnızca proxy konteyneri `api.anthropic.com:443`'e çıkabilir.
-- **Doktor raporu (Claude, yapılandırılmış JSON):** kategori + güven + gerekçe, histolojik tip, primer bölge,
-  evre/derece, belirteçler, önemli bulgular, tedavi/plan, ≤3 cümle özet, belirsizlikler; keyword doğrulama.
+- **Doktor raporu (Claude veya Gemini, yapılandırılmış JSON):** malignite, kategori + güven (rubrikli) + gerekçe,
+  histolojik tip, primer bölge, TNM/derece/cerrahi sınır/lenf nodu, belirteçler ve bulgular (metinden kanıt alıntılı),
+  tedavi/plan, ≤3 cümle özet, belirsizlikler (OCR düzeltmeleri dahil); keyword doğrulama; çıktı PII taraması.
+  Sentetik el yazısı setinde: Gemini Pro 20/20, Gemini 3.8 Flash 17/18 doğru kategori, 0 sızıntı.
 - **KVKK tasarımı:** ham dosya/metin hiçbir yerde loglanmaz/saklanmaz; multipart spool yok; tesseract stdin/stdout;
   dosya adı saklanmaz; hata mesajları yalnızca istisna tipi taşır; telemetri env'leri zorla kapalı.
 - **Kapalı devre dağıtım:** Docker `internal` ağ + host nftables (çift egress engeli), offline model paketi,
@@ -38,8 +40,9 @@ POST /jobs ─► OCR (Tesseract; GPU varsa Vision-LLM) ─► GLiNER-tr NER + r
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements-service.txt torch pytest
 brew install tesseract tesseract-lang          # Linux: apt install tesseract-ocr tesseract-ocr-tur
 make test                                       # 108 test, ağ/GPU gerekmez (GLiNER modeli ilk seferde iner)
-export ANTHROPIC_API_KEY=sk-ant-...             # bulut raporu için
-ANAMNEZ_CLOUD__ENABLED=true ANAMNEZ_LLM__ENABLED=false make run     # http://127.0.0.1:8080 (key: devkey)
+export GEMINI_API_KEY=...   # veya ANTHROPIC_API_KEY (cloud.provider'a göre)
+ANAMNEZ_CLOUD__ENABLED=true ANAMNEZ_CLOUD__PROVIDER=gemini ANAMNEZ_CLOUD__MODEL=gemini-pro-latest \
+  ANAMNEZ_LLM__ENABLED=false make run                                # http://127.0.0.1:8080 (key: devkey)
 python client/anamnez_client.py --url http://127.0.0.1:8080 --key devkey rapor.pdf
 ```
 GLiNER modeli ilk çalıştırmada HF'den iner (`neondijital/neonredact-tr-model`, ~1 GB); üretimde bundle ile offline.

@@ -81,14 +81,14 @@ services:
       ANAMNEZ_ANONYMIZATION__ENGINE: "ner+regex"
       ANAMNEZ_ANONYMIZATION__NER__MODEL_PATH: "/models/neonredact-tr"
       ANAMNEZ_CLOUD__ENABLED: "true"
-      ANAMNEZ_CLOUD__PROVIDER: "anthropic"
-      ANAMNEZ_CLOUD__MODEL: "claude-opus-5"
-      ANAMNEZ_CLOUD__API_KEY_FILE: "/run/secrets/anthropic_key"
+      ANAMNEZ_CLOUD__PROVIDER: "${CLOUD_PROVIDER:-anthropic}"     # anthropic | gemini
+      ANAMNEZ_CLOUD__MODEL: "${CLOUD_MODEL:-claude-opus-5}"        # gemini: gemini-pro-latest
+      ANAMNEZ_CLOUD__API_KEY_FILE: "/run/secrets/cloud_key"
       ANAMNEZ_CLOUD__PROXY: "http://10.200.1.20:3128"
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       OMP_NUM_THREADS: "4"
-    secrets: [api_key, anthropic_key]
+    secrets: [api_key, cloud_key]
     volumes:
       - service-data:/data
       - ./models:/models:ro
@@ -104,5 +104,5 @@ services:
 secrets:
   api_key:
     file: ./api_key.txt
-  anthropic_key:
-    file: ./anthropic_key.txt
+  cloud_key:
+    file: ${CLOUD_KEY_FILE:-./anthropic_key.txt}   # gemini için: CLOUD_KEY_FILE=./gemini_key.txt

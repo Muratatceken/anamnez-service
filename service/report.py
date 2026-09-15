@@ -29,13 +29,8 @@ CATEGORIES = [c.value for c in CancerCategory]
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
-# ── hata sınıfları ──────────────────────────────────────────────────────
-class CloudError(Exception):
-    """Kalıcı bulut hatası (kimlik, istek biçimi, şema)."""
-
-
-class TransientCloudError(CloudError):
-    """Yeniden denenebilir: 429, 5xx, bağlantı, zaman aşımı."""
+# ── hata sınıfları (CloudError/TransientCloudError: cloud_backends) ─────
+from .cloud_backends import CloudError, TransientCloudError, make_backend  # noqa: E402
 
 
 class ModelRefusal(CloudError):
@@ -107,8 +102,9 @@ harf hataları, bozuk etiketler, eksik satırlar olabilir ("HERD NEGATIE" → HE
 GÖREV
 1. Malignite durumu ve KATEGORİ: primer tümörün kaynak organına göre tek kategori. Karar tablosu:
    - Metastaz: metastazın değil PRİMER tümörün organı. Primer belirlenemiyorsa (CUP) → Other, güven ≤0.5.
-   - Lösemi (AML, ALL, KLL, KML), MDS, MPN (polisitemi vera, ET, myelofibrozis), myelom → Bone_Marrow;
-     periferik kan bulgusu dışında kemik iliği tanısı yoksa akut lösemi → Blood.
+   - Lösemiler (AML, ALL, KLL, KML) ve kan kaynaklı hematolojik maligniteler → Blood;
+     kemik iliği hastalıkları: MDS, MPN (polisitemi vera, esansiyel trombositoz, myelofibrozis), multipl myelom,
+     kemik iliği biyopsisiyle konan tanılar → Bone_Marrow.
    - Lenfoma (Hodgkin, NHL, DBBHL, foliküler…) → Lymph_Nodes (ekstranodal olsa da).
    - Glioblastom/astrositom/menenjiyom → Brain; periferik sinir tümörleri → Nervous_System.
    - Kolon/rektum → Colorectal; serviks → Cervix; endometrium → Uterus; intrahepatik kolanjiyokarsinom → Intrahepatic;
@@ -139,67 +135,36 @@ USER_SUFFIX = "\n>>>"
 class ReportGenerator:
     """Claude ile rapor üretir. `client` enjekte edilebilir (test/sahte)."""
 
-    def __init__(self, cfg: dict, client=None, validator_cfg: Optional[dict] = None, host: str = "api.anthropic.com"):
+    def __init__(self, cfg: dict, client=None, validator_cfg: Optional[dict] = None, host: str = "api.anthropic.com",
+                 backend=None):
+        self.provider = cfg.get("provider", "anthropic")
         self.model = cfg.get("model", "claude-opus-5")
         self.effort = cfg.get("effort", "high")
         if self.effort not in EFFORTS:
             raise ValueError(f"cloud.effort geçersiz: {self.effort!r} (izinli: {EFFORTS})")
         self.max_tokens = int(cfg.get("max_tokens", 16000))
-        self.timeout = float(cfg.get("timeout", 300))
         self.host = host
-        self._client = client
         self._cfg = cfg
         self.validator = Validator(validator_cfg or {"confidence_threshold": 0.6, "require_human_review_below": 0.4})
         self.schema = DoctorReport.model_json_schema()
+        # Test/sahte: `client` (Anthropic messages.create taklidi) veya `backend` (complete() taklidi)
+        self._backend = backend
+        if client is not None:
+            self._backend = _ClientBackend(client, self.model, self.effort, self.max_tokens)
 
-    def _get_client(self):
-        if self._client is None:
-            import anthropic
-
-            key_file = self._cfg.get("api_key_file")
-            api_key = Path(key_file).read_text(encoding="utf-8").strip() if key_file and Path(key_file).exists() else None
-            # Yeniden deneme pipeline'da (her deneme egress'ten geçer, denetim kaydı alır) → SDK retry kapalı
-            kwargs = {"api_key": api_key, "timeout": self.timeout, "max_retries": 0,
-                      "base_url": f"https://{self.host}"}   # hedef egress host'una SABİT (env ile değişemez)
-            proxy = self._cfg.get("proxy")
-            if proxy:
-                kwargs["http_client"] = anthropic.DefaultHttpxClient(proxy=proxy)
-            self._client = anthropic.Anthropic(**kwargs)
-        return self._client
-
-    def _call(self, anonymized_text: str):
-        import anthropic
-
-        client = self._get_client()
-        try:
-            return client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-                output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": self.schema}},
-                messages=[{"role": "user", "content": USER_PREFIX + anonymized_text + USER_SUFFIX}],
-            )
-        except anthropic.RateLimitError as e:
-            raise TransientCloudError("RateLimitError") from e
-        except anthropic.APITimeoutError as e:
-            raise TransientCloudError("APITimeoutError") from e
-        except anthropic.APIConnectionError as e:
-            raise TransientCloudError("APIConnectionError") from e
-        except anthropic.APIStatusError as e:
-            if e.status_code >= 500 or e.status_code in (408, 409, 529):
-                raise TransientCloudError(f"APIStatusError{e.status_code}") from e
-            raise CloudError(type(e).__name__) from e   # 400/401/403/404: mesaj taşınmaz
+    def _get_backend(self):
+        if self._backend is None:
+            self._backend = make_backend(self._cfg)
+        return self._backend
 
     def generate(self, anonymized_text: str) -> dict:
-        response = self._call(anonymized_text)
+        response = self._get_backend().complete(SYSTEM_PROMPT, USER_PREFIX + anonymized_text + USER_SUFFIX, self.schema)
         if response.stop_reason == "refusal":
-            details = getattr(response, "stop_details", None)
-            raise ModelRefusal(getattr(details, "category", None))
+            raise ModelRefusal(response.refusal_category)
         if response.stop_reason == "max_tokens":
             raise ReportTruncated(f"max_tokens={self.max_tokens}")
-        text = next((b.text for b in response.content if getattr(b, "type", "") == "text"), "")
         try:
-            report = DoctorReport.model_validate_json(text)
+            report = DoctorReport.model_validate_json(response.text)
         except (ValidationError, ValueError) as e:
             raise CloudError(f"şema doğrulama: {type(e).__name__}") from e
 
@@ -210,21 +175,40 @@ class ReportGenerator:
                                  histological_type=report.histolojik_tip, primary_site=report.primer_bolge),
             anonymized_text,
         )
-        usage = getattr(response, "usage", None)
         return {
             "rapor": report.model_dump(),
             "validated_category": val.validated_category,
             "adjusted_confidence": round(val.confidence_adjusted, 3),
             "keyword_matches": val.keyword_matches,
             "warnings": val.warnings,
+            "provider": self.provider,
             "model": self.model,
-            "usage": {
-                "input_tokens": getattr(usage, "input_tokens", None),
-                "output_tokens": getattr(usage, "output_tokens", None),
-                "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None),
-            },
-            "request_id": getattr(response, "_request_id", None),
+            "usage": response.usage,
+            "request_id": response.request_id,
         }
+
+
+class _ClientBackend:
+    """Anthropic `messages.create` uyumlu bir istemciyi (gerçek/sahte) backend arayüzüne sarar (testler)."""
+
+    def __init__(self, client, model, effort, max_tokens):
+        self.client, self.model, self.effort, self.max_tokens = client, model, effort, max_tokens
+
+    def complete(self, system, user, schema):
+        from .cloud_backends import CloudResponse
+
+        r = self.client.messages.create(
+            model=self.model, max_tokens=self.max_tokens,
+            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+            output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": schema}},
+            messages=[{"role": "user", "content": user}],
+        )
+        text = next((b.text for b in r.content if getattr(b, "type", "") == "text"), "")
+        stop = {"end_turn": "end_turn", "max_tokens": "max_tokens", "refusal": "refusal"}.get(r.stop_reason, "other")
+        d = getattr(r, "stop_details", None); u = getattr(r, "usage", None)
+        return CloudResponse(text=text, stop_reason=stop, refusal_category=getattr(d, "category", None) if stop == "refusal" else None,
+                             usage={"input_tokens": getattr(u, "input_tokens", None), "output_tokens": getattr(u, "output_tokens", None)},
+                             request_id=getattr(r, "_request_id", None))
 
 
 # ── rapor çıktısı PII taraması ──────────────────────────────────────────
@@ -283,7 +267,7 @@ def redact_report(rapor: dict, candidates: set[str], final_rules) -> list[str]:
 def report_to_markdown(r: dict) -> str:
     rep = r["rapor"]
     blocks = []
-    head = (f"**Otomatik özet (Claude)** — kategori **{r['validated_category']}** · güven {rep['guven']:.2f}"
+    head = (f"**Otomatik özet ({r.get('model', 'LLM')})** — kategori **{r['validated_category']}** · güven {rep['guven']:.2f}"
             + (f" (doğrulama sonrası {r['adjusted_confidence']:.2f})" if r.get("adjusted_confidence") != rep.get("guven") else "")
             + f" · malignite: {rep['malignite_durumu']} · okunabilirlik: {rep['okunabilirlik']}")
     blocks.append(head)

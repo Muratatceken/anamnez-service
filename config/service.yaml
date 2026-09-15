@@ -79,12 +79,12 @@ classification:
 # ── Bulut raporu: yalnızca kapıdan geçmiş ANONİM metin gider (service/egress.py) ──
 cloud:
   enabled: false             # true → Claude ile doktor raporu + sınıflandırma (ANTHROPIC_API_KEY veya api_key_file)
-  provider: "anthropic"      # tek izinli sağlayıcı; ağda da yalnızca api.anthropic.com:443 açık (deploy/)
-  model: "claude-opus-5"
+  provider: "anthropic"      # anthropic | gemini  (egress allowlist; squid ACL her iki host'a izinli)
+  model: "claude-opus-5"     # gemini için ör. gemini-3.8-flash / gemini-pro-latest
   effort: "high"             # low | medium | high | xhigh | max
   max_tokens: 16000          # yapılandırılmış çıktı + adaptif düşünme için pay (kesilirse ReportTruncated)
   timeout: 300
   attempts: 3                # geçici hatalarda (429/5xx/bağlantı) yeniden deneme — her deneme egress onayı alır
   backoff_seconds: 5
-  api_key_file: null         # ör. /run/secrets/anthropic_key
+  api_key_file: null         # ör. /run/secrets/anthropic_key (yoksa env: ANTHROPIC_API_KEY / GEMINI_API_KEY)
   proxy: null                # ör. http://egress-proxy:3128 — Docker'da tek çıkış noktası

@@ -21,7 +21,7 @@ from .anonymization.gate import GateResult, tr_fold
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_PROVIDERS = {"anthropic": "api.anthropic.com"}
+ALLOWED_PROVIDERS = {"anthropic": "api.anthropic.com", "gemini": "generativelanguage.googleapis.com"}
 
 # Son savunma: maske etiketleri dışında bariz PII kalıpları
 _FINAL_RULES = [

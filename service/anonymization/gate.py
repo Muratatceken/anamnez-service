@@ -233,7 +233,7 @@ class ResidualHeuristicLayer:
         ("contact", re.compile(r"(?<!\d)0?\s?\(?5\d{2}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?!\d)")),  # cep
         ("contact", re.compile(r"https?://\S+|www\.\S+")),
         # Maske etiketinden hemen sonra aynı satırda kalan BÜYÜK HARFLİ kelime(ler)
-        ("person", re.compile(r"\[(?:DOKTOR|HASTA_ADI|ISIM|BABA_ADI|PII)_SILINDI\][ \t]+(?:(?:Dr|Prof|Uzm|Doç)\.?[ \t]*)?((?:[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜa-zçğıöşü]{1,}[ \t]*){1,3})", re.M)),
+        ("person", re.compile(r"\[(?:DOKTOR|HASTA_ADI|ISIM|BABA_ADI|PII)_SILINDI\][ \t]+(?:(?:Dr|Prof|Uzm|Doç)\.?[ \t]*)?((?:[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜa-zçğıöşü]{2,}[ \t]*){1,3})", re.M)),   # ≥3 harf: 'Tc', 'Te' gibi OCR kırıntıları değil
     ]
 
     def __init__(self):
@@ -275,7 +275,7 @@ TOKEN_RX = re.compile(r"[A-ZÇĞİÖŞÜ]{3,}|\d{5,}")
 CROSS_STOPLIST = {
     # etiket/sık kelimeler — PII değil
     "ADI", "SOYADI", "HASTA", "DOKTOR", "TARIH", "TARİH", "TARİHİ", "SAAT", "TEL", "FAKS", "ADRES",
-    "KURUM", "WEB", "POSTA", "MAIL", "KİMLİK", "KIMLIK", "NO", "SAĞLIK", "SAGLIK", "BAKANLIĞI",
+    "KURUM", "WEB", "POSTA", "MAIL", "KİMLİK", "KIMLIK", "TC", "NO", "SAĞLIK", "SAGLIK", "BAKANLIĞI",
     "BAKANLIGI", "HASTANESİ", "HASTANESI", "ŞEHİR", "SEHIR", "DEVLET", "ÜNİVERSİTESİ", "TIP",
     "FAKÜLTESİ", "LABORATUVARI", "LABORATUVAR", "PATOLOJİ", "PATOLOJI", "TIBBİ", "TIBBI", "RAPORU",
     "SONUÇ", "TETKİK", "FORMU", "TALEP", "NUMUNE", "BİLGİLERİ", "PROF", "UZM", "DOÇ", "ASİSTAN",

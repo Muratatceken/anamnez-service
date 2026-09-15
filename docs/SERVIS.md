@@ -17,7 +17,8 @@ POST /jobs (PDF/PNG/JPG/TXT)
   │                 [+ llm_judge: yalnızca lokal LLM varsa]   → bulgu/hata varsa: needs_review (fail-closed)
   ├─ 4. EGRESS      service/egress.py: kapı geçti mi + hiçbir PII adayı çıktıda yok + TC/tarih/tel/e-posta/URL yok
   │                 → red: needs_review; kabul: hash+boyut+hedef+model denetim tablosuna (metin yazılmaz)
-  ├─ 5. Claude      claude-opus-5, yapılandırılmış JSON (DoctorReport): kategori, güven, gerekçe, histolojik tip,
+  ├─ 5. Bulut LLM   cloud.provider: anthropic (claude-opus-5) | gemini (gemini-pro-latest / gemini-3.8-flash)
+  │                 yapılandırılmış JSON (DoctorReport): kategori, güven, gerekçe, histolojik tip,
   │                 primer bölge, evre/derece, belirteçler, önemli bulgular, tedavi/plan, ≤3 cümle özet, belirsizlikler
   │                 + keyword doğrulama (src/validator.py). Ağ: squid allowlist → yalnızca api.anthropic.com:443
   └─ 6. Sonuç       JSON: anonim metin, report (yapılandırılmış + markdown), classification, gate, egress, timings,
@@ -29,6 +30,18 @@ ve denetim satırı alır. Model yanıtı da PII adayları + son kurallarla tara
 olur. `stop_reason` refusal → needs_review, max_tokens → failed (ReportTruncated).
 
 `cloud.enabled: false` iken (kapalı devre GPU modu) 4-5 yerine lokal LLM sınıflandırması çalışır.
+
+Sağlayıcı seçimi (sentetik el yazısı seti, 20 görüntü, Tesseract → NER+regex → kapı → egress):
+| Sağlayıcı / model | Sınıflandırma | Rapor süresi | Not |
+|---|---|---|---|
+| Gemini `gemini-pro-latest` | 20/20 | ~21 sn | en doğru |
+| Gemini `gemini-3.8-flash` | 17/18 | ~9 sn | hızlı/ucuz; 1 hata (AML → Bone_Marrow, prompt hizalandı) |
+| Anthropic `claude-opus-5` | (anahtar bekleniyor) | | |
+
+**Gemini veri kullanımı (KVKK):** Gemini API'nin ücretsiz katmanında istemler ürün geliştirme için kullanılabilir;
+metin anonim olsa da **ücretli katman** (veya Vertex AI) kullanın ve Google Cloud veri işleme şartlarını sözleşmeye bağlayın.
+Anthropic API'de istemler varsayılan olarak eğitimde kullanılmaz. Her iki durumda da sunucudan yalnızca kapıdan geçmiş
+anonim metin çıkar.
 
 ## API
 
